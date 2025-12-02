@@ -36,40 +36,52 @@
 #include "utilities/macros.hpp"
 
 template <typename T, class OopClosureType>
-void InstanceMirrorKlass::oop_oop_iterate_statics(oop obj, OopClosureType* closure) {
-  T* p         = (T*)start_of_static_fields(obj);
-  T* const end = p + java_lang_Class::static_oop_field_count_raw(obj);
+void InstanceMirrorKlass::oop_oop_iterate_statics(oop obj, OopClosureType *closure)
+{
+  T *p = (T *)start_of_static_fields(obj);
+  T *const end = p + java_lang_Class::static_oop_field_count_raw(obj);
 
-  for (; p < end; ++p) {
+  for (; p < end; ++p)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
-void InstanceMirrorKlass::oop_oop_iterate(oop obj, OopClosureType* closure) {
+void InstanceMirrorKlass::oop_oop_iterate(oop obj, OopClosureType *closure)
+{
   InstanceKlass::oop_oop_iterate<T>(obj, closure);
 
-  if (Devirtualizer::do_metadata(closure)) {
-    Klass* klass = java_lang_Class::as_Klass_raw(obj);
+  if (Devirtualizer::do_metadata(closure))
+  {
+    Klass *klass = java_lang_Class::as_Klass_raw(obj);
     // We'll get NULL for primitive mirrors.
-    if (klass != NULL) {
-      if (klass->class_loader_data() == NULL) {
+    if (klass != NULL)
+    {
+      if (klass->class_loader_data() == NULL)
+      {
         // This is a mirror that belongs to a shared class that has not be loaded yet.
         // It's only reachable via HeapShared::roots(). All of its fields should be zero
         // so there's no need to scan.
         assert(klass->is_shared(), "must be");
         return;
-      } else if (klass->is_instance_klass() && klass->class_loader_data()->has_class_mirror_holder()) {
+      }
+      else if (klass->is_instance_klass() && klass->class_loader_data()->has_class_mirror_holder())
+      {
         // A non-strong hidden class doesn't have its own class loader,
         // so when handling the java mirror for the class we need to make sure its class
         // loader data is claimed, this is done by calling do_cld explicitly.
         // For non-strong hidden classes the call to do_cld is made when the class
         // loader itself is handled.
         Devirtualizer::do_cld(closure, klass->class_loader_data());
-      } else {
+      }
+      else
+      {
         Devirtualizer::do_klass(closure, klass);
       }
-    } else {
+    }
+    else
+    {
       // We would like to assert here (as below) that if klass has been NULL, then
       // this has been a mirror for a primitive type that we do not need to follow
       // as they are always strong roots.
@@ -86,7 +98,8 @@ void InstanceMirrorKlass::oop_oop_iterate(oop obj, OopClosureType* closure) {
 }
 
 template <typename T, class OopClosureType>
-void InstanceMirrorKlass::oop_oop_iterate_reverse(oop obj, OopClosureType* closure) {
+void InstanceMirrorKlass::oop_oop_iterate_reverse(oop obj, OopClosureType *closure)
+{
   InstanceKlass::oop_oop_iterate_reverse<T>(obj, closure);
 
   InstanceMirrorKlass::oop_oop_iterate_statics<T>(obj, closure);
@@ -94,38 +107,46 @@ void InstanceMirrorKlass::oop_oop_iterate_reverse(oop obj, OopClosureType* closu
 
 template <typename T, class OopClosureType>
 void InstanceMirrorKlass::oop_oop_iterate_statics_bounded(oop obj,
-                                                          OopClosureType* closure,
-                                                          MemRegion mr) {
-  T* p   = (T*)start_of_static_fields(obj);
-  T* end = p + java_lang_Class::static_oop_field_count_raw(obj);
+                                                          OopClosureType *closure,
+                                                          MemRegion mr)
+{
+  T *p = (T *)start_of_static_fields(obj);
+  T *end = p + java_lang_Class::static_oop_field_count_raw(obj);
 
-  T* const l   = (T*)mr.start();
-  T* const h   = (T*)mr.end();
-  assert(mask_bits((intptr_t)l, sizeof(T)-1) == 0 &&
-         mask_bits((intptr_t)h, sizeof(T)-1) == 0,
+  T *const l = (T *)mr.start();
+  T *const h = (T *)mr.end();
+  assert(mask_bits((intptr_t)l, sizeof(T) - 1) == 0 &&
+             mask_bits((intptr_t)h, sizeof(T) - 1) == 0,
          "bounded region must be properly aligned");
 
-  if (p < l) {
+  if (p < l)
+  {
     p = l;
   }
-  if (end > h) {
+  if (end > h)
+  {
     end = h;
   }
 
-  for (;p < end; ++p) {
+  for (; p < end; ++p)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
-void InstanceMirrorKlass::oop_oop_iterate_bounded(oop obj, OopClosureType* closure, MemRegion mr) {
+void InstanceMirrorKlass::oop_oop_iterate_bounded(oop obj, OopClosureType *closure, MemRegion mr)
+{
   InstanceKlass::oop_oop_iterate_bounded<T>(obj, closure, mr);
 
-  if (Devirtualizer::do_metadata(closure)) {
-    if (mr.contains(obj)) {
-      Klass* klass = java_lang_Class::as_Klass_raw(obj);
+  if (Devirtualizer::do_metadata(closure))
+  {
+    if (mr.contains(obj))
+    {
+      Klass *klass = java_lang_Class::as_Klass_raw(obj);
       // We'll get NULL for primitive mirrors.
-      if (klass != NULL) {
+      if (klass != NULL)
+      {
         Devirtualizer::do_klass(closure, klass);
       }
     }

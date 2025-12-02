@@ -123,15 +123,12 @@ public:
   uintptr_t getRegionAttrBiasedBase() { return _g1h->getRegionAttrBiasedBase(); }
   uintptr_t getRegionAttrBase() { return _g1h->getRegionAttrBase(); }
   uint getRegionAttrShiftBy() { return _g1h->getRegionAttrShiftBy(); }
+  uintptr_t getScanner() { return (uintptr_t)&_scanner; }
 
   // @insert: get rdc
   G1RedirtyCardsLocalQueueSet *getRdcQueueSetPtr() { return &_rdc_local_qset; }
 
   // @insert: debug function
-  oop do_copy_to_survivor_space_debug(G1HeapRegionAttr region_attr,
-                                      oop obj,
-                                      markWord old_mark,
-                                      Klass *, size_t, uint, G1HeapRegionAttr, HeapRegion *, uint, HeapWord *);
   HeapWord *allocate_copy_slow(G1HeapRegionAttr *dest_attr,
                                oop old,
                                size_t word_sz,

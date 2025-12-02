@@ -4125,7 +4125,6 @@ public:
 #define NODE_INDEX_OFFSET 288
 #define YOUND_INDEX_IN_CSET_OFFSET 256
 #define HEAP_REGION_TYPE_OFFSET 188
-#define LogOfHRGrainBytes 0x16
 
 /*-------------- G1ParScanThreadState ------------*/
 #define QSET_OFFSET 0x18
@@ -4189,6 +4188,7 @@ public:
       *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
     }
   }
+
   void do_oop_work(uintptr_t src, uintptr_t dest, uint scanning_in_young, G1ParScanThreadState *pss)
   {
     uintptr_t heap_oop = *(uintptr_t *)(src);
@@ -4197,7 +4197,7 @@ public:
 
     uintptr_t obj = heap_oop;
 
-    // 16
+    // 15 in mechrevo r78845h 16 in others
     // tty->print_cr("%x", LogOfHRGrainBytes);
 
     uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * REGION_ATTR_SIZE;
@@ -4219,7 +4219,7 @@ public:
       localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
       *(uint *)bottom_addr = localBot;
     }
-    else if (((dest ^ obj) >> LogOfHRGrainBytes) != 0)
+    else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
     {
       // 不会是-3 optional
       assert(region_attr_type != -3);
@@ -4227,8 +4227,8 @@ public:
       {
         uint region_bias = pss->getHeapRegionBias();
         uint region_shiftby = pss->getHeapRegionShiftBy();
-        size_t pointer_delta = obj - (region_bias << region_shiftby);
-        uint region = pointer_delta >> LogOfHRGrainBytes;
+        size_t pointer_delta = obj - ((uintptr_t)region_bias << region_shiftby);
+        uint region = pointer_delta >> HeapRegion::LogOfHRGrainBytes;
 
         uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
 
@@ -4330,7 +4330,155 @@ public:
     if (obj_ptr == 0)
       obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
 
-    return (uintptr_t)pss->do_copy_to_survivor_space_debug(*(G1HeapRegionAttr *)region_attr_ptr, (oop)old, markWord(old_mark), (Klass *)klass_ptr, size, age, *(G1HeapRegionAttr *)dest_attr_ptr, (HeapRegion *)from_region, node_index, (HeapWord *)obj_ptr);
+    uintptr_t forward_ptr = 0;
+    uintptr_t m = (obj_ptr & ~LOCK_MASK_IN_PLACE) | MARKED_VALUE;
+    // uintptr_t old_mark = *(uintptr_t *)(obj + MarkWordOff);
+    // if (old_mark == m_value)
+    //{
+    //   *(uintptr_t *)(obj + MarkWordOff) = m;
+    //   forward_ptr = 0;
+    // }
+    // else
+    //   forward_ptr = old_mark & ~LOCK_MASK_IN_PLACE;
+    //  @notice: must equal
+    *(uintptr_t *)(old + MarkWordOff) = m;
+    forward_ptr = 0;
+
+    // if (forward_ptr == 0)
+    //{
+    {
+      const uint young_index = *(uint *)(from_region + YOUND_INDEX_IN_CSET_OFFSET);
+      uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+      *((size_t *)young_words_base + young_index) += size;
+    }
+
+    //// upadte age
+    uint64_t new_mark = old_mark;
+    if (dest_attr_type == TYPE_YOUNG)
+    {
+      if ((old_mark & UNLOCKED_VALUE) == 0x0)
+      {
+        bool has_monitor = old_mark & MONITOR_VALUE;
+        uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
+        uint64_t mark = *(uint64_t *)ptr;
+        *(uint64_t *)ptr = (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT);
+      }
+      else
+        new_mark = (old_mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & AGE_MASK) << AGE_SHIFT);
+      // this not needs
+      // uintptr_t age_table_ptr = (uintptr_t)pss + AGE_TABLE_OFFSET;
+      //*((size_t *)age_table_ptr + (age + 1 < MAX_AGE ? age + 1 : age)) += size;
+    }
+    *(uint64_t *)(obj_ptr + MarkWordOff) = new_mark;
+
+    // 不重叠区域的复制
+    // Copy::disjoint_words((HeapWord *)src, (HeapWord *)obj_ptr, size);
+    for (size_t i = 1; i < size; ++i)
+      *(uintptr_t *)(obj_ptr + i * OBJECT_PTR_SIZE) = *(uintptr_t *)(old + i * OBJECT_PTR_SIZE);
+
+    uintptr_t scanning_in_young = dest_attr_type == TYPE_YOUNG;
+    *(uint8_t *)((uintptr_t)pss + 0x180 + 0x20) = scanning_in_young;
+    // obj_array trace
+    if (lh < 0)
+    {
+      if (kid == ObjectArrayKlassID)
+      {
+        int array_length = *(int *)(old + ArrayLenOff);
+        int chunk_size = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+        int end = array_length % chunk_size;
+        *(int *)(obj_ptr + ArrayLenOff) = end;
+
+        uint step_index = end;
+        uint step_ncreate = array_length > end ? 1u : 0u;
+
+        for (uint i = 0; i < step_ncreate; ++i)
+        {
+          // push 这里只push taskqueue_t
+          uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+          uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
+
+          uint localBot = *(uint *)bottom_addr;
+          uint age_top = *(uint *)age_top_addr;
+          uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+          assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
+
+          uintptr_t base = pss->getTaskQueueElemsBase();
+          *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = old + PartialArrayTag;
+          localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
+          *(uint *)bottom_addr = localBot;
+        }
+
+        uintptr_t low = obj_ptr + ArrayElementOff;
+        uintptr_t high = obj_ptr + ArrayElementOff + step_index * OBJECT_PTR_SIZE;
+        uintptr_t p = obj_ptr + ArrayElementOff;
+        uintptr_t q = p + array_length * OBJECT_PTR_SIZE;
+        if (p < low)
+          p = low;
+        if (q > high)
+          q = high;
+        while (p < q)
+        {
+          //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + OBJCLOSURE_OFFSET))->do_oop((oop *)p);
+          do_oop_work(p - obj_ptr + old, p, scanning_in_young, pss);
+          p += OBJECT_PTR_SIZE;
+        }
+      }
+      return obj_ptr;
+    }
+    G1ScanEvacuatedObjClosure *scanner = (G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180);
+    // oop_trace
+    int vtable_len = *(int *)(klass_ptr + VTableLenOff);
+    int itable_len = *(int *)(klass_ptr + ITableLenOff);
+    int nonStaticOopMapSize = *(int *)(klass_ptr + NonstaticOopMapSizeOff);
+    uintptr_t start_map = (uintptr_t)((uintptr_t *)(klass_ptr + VTableOff) + vtable_len + itable_len);
+    uintptr_t end_map = start_map + nonStaticOopMapSize * OBJECT_PTR_SIZE;
+    while (start_map < end_map)
+    {
+      end_map -= OBJECT_PTR_SIZE;
+      int offset = *(int *)(end_map);
+      int count = *(int *)(end_map + 0x4);
+      uintptr_t start = obj_ptr + offset;
+      uintptr_t end = start + count * OBJECT_PTR_SIZE;
+      while (start < end)
+      {
+        end -= OBJECT_PTR_SIZE;
+        //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180))->do_oop((oop *)end);
+        do_oop_work(end - obj_ptr + old, end, scanning_in_young, pss);
+      }
+    }
+    //((InstanceKlass *)klass_ptr)->oop_oop_iterate_reverse<oop>((oop)obj_ptr, scanner);
+    if (kid == InstanceMirrorKlassID)
+    {
+      uintptr_t static_start = obj_ptr + StaticFieldOff;
+      uint staticCount = *(uint *)(old + staticOopFieldCountOff);
+      uintptr_t static_end = static_start + staticCount * OBJECT_PTR_SIZE;
+      while (static_start < static_end)
+      {
+        do_oop_work(static_start - obj_ptr + old, static_start, scanning_in_young, pss);
+        static_start += OBJECT_PTR_SIZE;
+      }
+      //((InstanceMirrorKlass *)klass_ptr)->oop_oop_iterate_statics<oop>((oop)obj_ptr, scanner);
+    }
+    else if (kid == InstanceRefKlassID)
+    {
+      uintptr_t discovered_offset = obj_ptr + DISCOVERED_OFFSET;
+      do_oop_work(old + DISCOVERED_OFFSET, discovered_offset, scanning_in_young, pss);
+      uintptr_t referent_offset = obj_ptr + REFERENT_OFFSET;
+      do_oop_work(old + REFERENT_OFFSET, referent_offset, scanning_in_young, pss);
+      do_oop_work(old + DISCOVERED_OFFSET, discovered_offset, scanning_in_young, pss);
+      //((InstanceRefKlass *)klass_ptr)->oop_oop_iterate_ref_processing<oop>((oop)obj_ptr, scanner);
+    }
+    return obj_ptr;
+    //}
+    // else
+    //{
+    //   // @notice: current all in contains so not read bottom and hard_end
+    //   // uintptr_t bottom = *(uintptr_t *)(buffer + BOTTOM_OFFSET);
+    //   // uintptr_t hard_end = *(uintptr_t *)(buffer + HARD_END_OFFSET);
+    //   // if (bottom <= obj_ptr && obj_ptr < hard_end)
+    //   *(uintptr_t *)(buffer + TOP_OFFSET) = obj_ptr;
+    //   return forward_ptr;
+    // }
   }
 
   void do_oop_evac(uintptr_t task, G1ParScanThreadState *pss)
@@ -4360,7 +4508,7 @@ public:
 
     *(uintptr_t *)task = obj;
 
-    if (((task ^ obj) >> LogOfHRGrainBytes) == 0)
+    if (((task ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
       return;
 
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (task >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
