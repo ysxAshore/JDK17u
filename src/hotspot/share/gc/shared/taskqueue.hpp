@@ -49,9 +49,11 @@
 #endif // TASKQUEUE_STATS
 
 #if TASKQUEUE_STATS
-class TaskQueueStats {
+class TaskQueueStats
+{
 public:
-  enum StatId {
+  enum StatId
+  {
     push,             // number of taskqueue pushes
     pop,              // number of taskqueue pops
     pop_slow,         // subset of taskqueue pops that were done slow-path
@@ -63,41 +65,48 @@ public:
   };
 
 public:
-  inline TaskQueueStats()       { reset(); }
+  inline TaskQueueStats() { reset(); }
 
-  inline void record_push()          { ++_stats[push]; }
-  inline void record_pop()           { ++_stats[pop]; }
-  inline void record_pop_slow()      { record_pop(); ++_stats[pop_slow]; }
+  inline void record_push() { ++_stats[push]; }
+  inline void record_pop() { ++_stats[pop]; }
+  inline void record_pop_slow()
+  {
+    record_pop();
+    ++_stats[pop_slow];
+  }
   inline void record_steal_attempt() { ++_stats[steal_attempt]; }
-  inline void record_steal()         { ++_stats[steal]; }
+  inline void record_steal() { ++_stats[steal]; }
   inline void record_overflow(size_t new_length);
 
-  TaskQueueStats & operator +=(const TaskQueueStats & addend);
+  TaskQueueStats &operator+=(const TaskQueueStats &addend);
 
   inline size_t get(StatId id) const { return _stats[id]; }
-  inline const size_t* get() const   { return _stats; }
+  inline const size_t *get() const { return _stats; }
 
   inline void reset();
 
   // Print the specified line of the header (does not include a line separator).
-  static void print_header(unsigned int line, outputStream* const stream = tty,
+  static void print_header(unsigned int line, outputStream *const stream = tty,
                            unsigned int width = 10);
   // Print the statistics (does not include a line separator).
-  void print(outputStream* const stream = tty, unsigned int width = 10) const;
+  void print(outputStream *const stream = tty, unsigned int width = 10) const;
 
   DEBUG_ONLY(void verify() const;)
 
 private:
-  size_t                    _stats[last_stat_id];
-  static const char * const _names[last_stat_id];
+  size_t _stats[last_stat_id];
+  static const char *const _names[last_stat_id];
 };
 
-void TaskQueueStats::record_overflow(size_t new_len) {
+void TaskQueueStats::record_overflow(size_t new_len)
+{
   ++_stats[overflow];
-  if (new_len > _stats[overflow_max_len]) _stats[overflow_max_len] = new_len;
+  if (new_len > _stats[overflow_max_len])
+    _stats[overflow_max_len] = new_len;
 }
 
-void TaskQueueStats::reset() {
+void TaskQueueStats::reset()
+{
   memset(_stats, 0, sizeof(_stats));
 }
 #endif // TASKQUEUE_STATS
@@ -105,7 +114,8 @@ void TaskQueueStats::reset() {
 // TaskQueueSuper collects functionality common to all GenericTaskQueue instances.
 
 template <unsigned int N, MEMFLAGS F>
-class TaskQueueSuper: public CHeapObj<F> {
+class TaskQueueSuper : public CHeapObj<F>
+{
 protected:
   // Internal type for indexing the queue; also used for the tag.
   typedef NOT_LP64(uint16_t) LP64_ONLY(uint32_t) idx_t;
@@ -117,79 +127,98 @@ protected:
   STATIC_ASSERT(is_power_of_2(N));
   static const uint MOD_N_MASK = N - 1;
 
-  class Age {
+  class Age
+  {
     friend class TaskQueueSuper;
 
   public:
     explicit Age(size_t data = 0) : _data(data) {}
-    Age(idx_t top, idx_t tag) { _fields._top = top; _fields._tag = tag; }
+    Age(idx_t top, idx_t tag)
+    {
+      _fields._top = top;
+      _fields._tag = tag;
+    }
 
     idx_t top() const { return _fields._top; }
     idx_t tag() const { return _fields._tag; }
 
-    bool operator ==(const Age& other) const { return _data == other._data; }
+    bool operator==(const Age &other) const { return _data == other._data; }
 
   private:
-    struct fields {
+    struct fields
+    {
       idx_t _top;
       idx_t _tag;
     };
-    union {
+    union
+    {
       size_t _data;
       fields _fields;
     };
     STATIC_ASSERT(sizeof(size_t) >= sizeof(fields));
   };
 
-  uint bottom_relaxed() const {
+  uint bottom_relaxed() const
+  {
     return Atomic::load(&_bottom);
   }
 
-  uint bottom_acquire() const {
+  uint bottom_acquire() const
+  {
     return Atomic::load_acquire(&_bottom);
   }
 
-  void set_bottom_relaxed(uint new_bottom) {
+  void set_bottom_relaxed(uint new_bottom)
+  {
     Atomic::store(&_bottom, new_bottom);
   }
 
-  void release_set_bottom(uint new_bottom) {
+  void release_set_bottom(uint new_bottom)
+  {
     Atomic::release_store(&_bottom, new_bottom);
   }
 
-  Age age_relaxed() const {
+  Age age_relaxed() const
+  {
     return Age(Atomic::load(&_age._data));
   }
 
-  void set_age_relaxed(Age new_age) {
+  void set_age_relaxed(Age new_age)
+  {
     Atomic::store(&_age._data, new_age._data);
   }
 
-  Age cmpxchg_age(Age old_age, Age new_age) {
+  Age cmpxchg_age(Age old_age, Age new_age)
+  {
     return Age(Atomic::cmpxchg(&_age._data, old_age._data, new_age._data));
   }
 
-  idx_t age_top_relaxed() const {
+  idx_t age_top_relaxed() const
+  {
     // Atomically accessing a subfield of an "atomic" member.
     return Atomic::load(&_age._fields._top);
   }
 
   // These both operate mod N.
-  static uint increment_index(uint ind) {
+  static uint increment_index(uint ind)
+  {
     return (ind + 1) & MOD_N_MASK;
   }
-  static uint decrement_index(uint ind) {
+  static uint decrement_index(uint ind)
+  {
     return (ind - 1) & MOD_N_MASK;
   }
 
   // Returns a number in the range [0..N).  If the result is "N-1", it should be
   // interpreted as 0.
-  uint dirty_size(uint bot, uint top) const {
+  uint dirty_size(uint bot, uint top) const
+  {
     return (bot - top) & MOD_N_MASK;
   }
 
   // Returns the size corresponding to the given "bot" and "top".
-  uint clean_size(uint bot, uint top) const {
+  uint clean_size(uint bot, uint top) const
+  {
     uint sz = dirty_size(bot, top);
     // Has the queue "wrapped", so that bottom is less than top?  There's a
     // complicated special case here.  A pair of threads could perform pop_local
@@ -212,11 +241,13 @@ protected:
   // been decremented past top, so that _bottom+1 mod N == top.  See
   // the discussion in clean_size.
 
-  void assert_not_underflow(uint bot, uint top) const {
+  void assert_not_underflow(uint bot, uint top) const
+  {
     assert_not_underflow(dirty_size(bot, top));
   }
 
-  void assert_not_underflow(uint dirty_size) const {
+  void assert_not_underflow(uint dirty_size) const
+  {
     assert(dirty_size != N - 1, "invariant");
   }
 
@@ -238,26 +269,34 @@ private:
   NONCOPYABLE(TaskQueueSuper);
 
 public:
+  // @insert
+  uintptr_t getBottomAddr() { return (uintptr_t)&_bottom; }
+  uintptr_t getAgeTopAddr() { return (uintptr_t)&_age._fields._top; }
+
   TaskQueueSuper() : _bottom(0), _age() {}
 
   // Assert the queue is empty.
   // Unreliable if there are concurrent pushes or pops.
-  void assert_empty() const {
+  void assert_empty() const
+  {
     assert(bottom_relaxed() == age_top_relaxed(), "not empty");
   }
 
-  bool is_empty() const {
+  bool is_empty() const
+  {
     return size() == 0;
   }
 
   // Return an estimate of the number of elements in the queue.
   // Treats pop_local/pop_global race that underflows as empty.
-  uint size() const {
+  uint size() const
+  {
     return clean_size(bottom_relaxed(), age_top_relaxed());
   }
 
   // Discard the contents of the queue.
-  void set_empty() {
+  void set_empty()
+  {
     set_bottom_relaxed(0);
     set_age_relaxed(Age());
   }
@@ -303,7 +342,8 @@ public:
 //
 
 template <class E, MEMFLAGS F, unsigned int N = TASKQUEUE_SIZE>
-class GenericTaskQueue: public TaskQueueSuper<N, F> {
+class GenericTaskQueue : public TaskQueueSuper<N, F>
+{
 protected:
   typedef typename TaskQueueSuper<N, F>::Age Age;
   typedef typename TaskQueueSuper<N, F>::idx_t idx_t;
@@ -331,7 +371,7 @@ public:
   using TaskQueueSuper<N, F>::max_elems;
   using TaskQueueSuper<N, F>::size;
 
-#if  TASKQUEUE_STATS
+#if TASKQUEUE_STATS
   using TaskQueueSuper<N, F>::stats;
 #endif
 
@@ -355,26 +395,30 @@ public:
   // If successfully claims a task, returns true and sets t to the task;
   // otherwise, returns false and t is unspecified.  May fail and return
   // false because of a successful steal by pop_global.
-  inline bool pop_local(E& t, uint threshold = 0);
+  inline bool pop_local(E &t, uint threshold = 0);
 
   // Like pop_local(), but uses the "global" end of the queue (the least
   // recently pushed).
-  bool pop_global(E& t);
+  bool pop_global(E &t);
 
   // Delete any resource associated with the queue.
   ~GenericTaskQueue();
 
   // Apply fn to each element in the task queue.  The queue must not
   // be modified while iterating.
-  template<typename Fn> void iterate(Fn fn);
+  template <typename Fn>
+  void iterate(Fn fn);
+
+  // @insert: insert get taskqueue base top and bottom
+  uintptr_t getTaskQueueElemsBase() { return (uintptr_t)_elems; }
 
 private:
   // Base class has trailing padding.
 
   // Element array.
-  E* _elems;
+  E *_elems;
 
-  DEFINE_PAD_MINUS_SIZE(1, DEFAULT_CACHE_LINE_SIZE, sizeof(E*));
+  DEFINE_PAD_MINUS_SIZE(1, DEFAULT_CACHE_LINE_SIZE, sizeof(E *));
   // Queue owner local variables. Not to be accessed by other threads.
 
   static const uint InvalidQueueId = uint(-1);
@@ -383,17 +427,19 @@ private:
   int _seed; // Current random seed used for selecting a random queue during stealing.
 
   DEFINE_PAD_MINUS_SIZE(2, DEFAULT_CACHE_LINE_SIZE, sizeof(uint) + sizeof(int));
+
 public:
   int next_random_queue_id();
 
-  void set_last_stolen_queue_id(uint id)     { _last_stolen_queue_id = id; }
-  uint last_stolen_queue_id() const          { return _last_stolen_queue_id; }
+  void set_last_stolen_queue_id(uint id) { _last_stolen_queue_id = id; }
+  uint last_stolen_queue_id() const { return _last_stolen_queue_id; }
   bool is_last_stolen_queue_id_valid() const { return _last_stolen_queue_id != InvalidQueueId; }
-  void invalidate_last_stolen_queue_id()     { _last_stolen_queue_id = InvalidQueueId; }
+  void invalidate_last_stolen_queue_id() { _last_stolen_queue_id = InvalidQueueId; }
 };
 
-template<class E, MEMFLAGS F, unsigned int N>
-GenericTaskQueue<E, F, N>::GenericTaskQueue() : _last_stolen_queue_id(InvalidQueueId), _seed(17 /* random number */) {
+template <class E, MEMFLAGS F, unsigned int N>
+GenericTaskQueue<E, F, N>::GenericTaskQueue() : _last_stolen_queue_id(InvalidQueueId), _seed(17 /* random number */)
+{
   assert(sizeof(Age) == sizeof(size_t), "Depends on this.");
 }
 
@@ -408,11 +454,11 @@ GenericTaskQueue<E, F, N>::GenericTaskQueue() : _last_stolen_queue_id(InvalidQue
 // Note that size() is not hidden--it returns the number of elements in the
 // TaskQueue, and does not include the size of the overflow stack.  This
 // simplifies replacement of GenericTaskQueues with OverflowTaskQueues.
-template<class E, MEMFLAGS F, unsigned int N = TASKQUEUE_SIZE>
-class OverflowTaskQueue: public GenericTaskQueue<E, F, N>
+template <class E, MEMFLAGS F, unsigned int N = TASKQUEUE_SIZE>
+class OverflowTaskQueue : public GenericTaskQueue<E, F, N>
 {
 public:
-  typedef Stack<E, F>               overflow_t;
+  typedef Stack<E, F> overflow_t;
   typedef GenericTaskQueue<E, F, N> taskqueue_t;
 
   TASKQUEUE_STATS_ONLY(using taskqueue_t::stats;)
@@ -423,13 +469,14 @@ public:
   inline bool try_push_to_taskqueue(E t);
 
   // Attempt to pop from the overflow stack; return true if anything was popped.
-  inline bool pop_overflow(E& t);
+  inline bool pop_overflow(E &t);
 
-  inline overflow_t* overflow_stack() { return &_overflow_stack; }
+  inline overflow_t *overflow_stack() { return &_overflow_stack; }
 
   inline bool taskqueue_empty() const { return taskqueue_t::is_empty(); }
-  inline bool overflow_empty()  const { return _overflow_stack.is_empty(); }
-  inline bool is_empty()        const {
+  inline bool overflow_empty() const { return _overflow_stack.is_empty(); }
+  inline bool is_empty() const
+  {
     return taskqueue_empty() && overflow_empty();
   }
 
@@ -437,7 +484,8 @@ private:
   overflow_t _overflow_stack;
 };
 
-class TaskQueueSetSuper {
+class TaskQueueSetSuper
+{
 public:
   // Assert all queues in the set are empty.
   NOT_DEBUG(void assert_empty() const {})
@@ -447,19 +495,22 @@ public:
   virtual uint tasks() const = 0;
 };
 
-template <MEMFLAGS F> class TaskQueueSetSuperImpl: public CHeapObj<F>, public TaskQueueSetSuper {
+template <MEMFLAGS F>
+class TaskQueueSetSuperImpl : public CHeapObj<F>, public TaskQueueSetSuper
+{
 };
 
-template<class T, MEMFLAGS F>
-class GenericTaskQueueSet: public TaskQueueSetSuperImpl<F> {
+template <class T, MEMFLAGS F>
+class GenericTaskQueueSet : public TaskQueueSetSuperImpl<F>
+{
 public:
   typedef typename T::element_type E;
 
 private:
   uint _n;
-  T** _queues;
+  T **_queues;
 
-  bool steal_best_of_2(uint queue_num, E& t);
+  bool steal_best_of_2(uint queue_num, E &t);
 
 public:
   GenericTaskQueueSet(uint n);
@@ -467,13 +518,13 @@ public:
 
   // Set the i'th queue to the provided queue.
   // Does not transfer ownership of the queue to this queue set.
-  void register_queue(uint i, T* q);
+  void register_queue(uint i, T *q);
 
-  T* queue(uint n);
+  T *queue(uint n);
 
   // Try to steal a task from some other queue than queue_num. It may perform several attempts at doing so.
   // Returns if stealing succeeds, and sets "t" to the stolen task.
-  bool steal(uint queue_num, E& t);
+  bool steal(uint queue_num, E &t);
 
   DEBUG_ONLY(virtual void assert_empty() const;)
 
@@ -482,37 +533,44 @@ public:
   uint size() const { return _n; }
 };
 
-template<class T, MEMFLAGS F> void
-GenericTaskQueueSet<T, F>::register_queue(uint i, T* q) {
+template <class T, MEMFLAGS F>
+void GenericTaskQueueSet<T, F>::register_queue(uint i, T *q)
+{
   assert(i < _n, "index out of range.");
   _queues[i] = q;
 }
 
-template<class T, MEMFLAGS F> T*
-GenericTaskQueueSet<T, F>::queue(uint i) {
+template <class T, MEMFLAGS F>
+T *GenericTaskQueueSet<T, F>::queue(uint i)
+{
   return _queues[i];
 }
 
 #ifdef ASSERT
-template<class T, MEMFLAGS F>
-void GenericTaskQueueSet<T, F>::assert_empty() const {
-  for (uint j = 0; j < _n; j++) {
+template <class T, MEMFLAGS F>
+void GenericTaskQueueSet<T, F>::assert_empty() const
+{
+  for (uint j = 0; j < _n; j++)
+  {
     _queues[j]->assert_empty();
   }
 }
 #endif // ASSERT
 
-template<class T, MEMFLAGS F>
-uint GenericTaskQueueSet<T, F>::tasks() const {
+template <class T, MEMFLAGS F>
+uint GenericTaskQueueSet<T, F>::tasks() const
+{
   uint n = 0;
-  for (uint j = 0; j < _n; j++) {
+  for (uint j = 0; j < _n; j++)
+  {
     n += _queues[j]->size();
   }
   return n;
 }
 
 // When to terminate from the termination protocol.
-class TerminatorTerminator: public CHeapObj<mtInternal> {
+class TerminatorTerminator : public CHeapObj<mtInternal>
+{
 public:
   virtual bool should_exit_termination() = 0;
 };
@@ -520,13 +578,14 @@ public:
 class ObjArrayTask
 {
 public:
-  ObjArrayTask(oop o = NULL, int idx = 0): _obj(o), _index(idx) { }
-  ObjArrayTask(oop o, size_t idx): _obj(o), _index(int(idx)) {
+  ObjArrayTask(oop o = NULL, int idx = 0) : _obj(o), _index(idx) {}
+  ObjArrayTask(oop o, size_t idx) : _obj(o), _index(int(idx))
+  {
     assert(idx <= size_t(max_jint), "too big");
   }
   // Trivially copyable, for use in GenericTaskQueue.
 
-  inline oop obj()   const { return _obj; }
+  inline oop obj() const { return _obj; }
   inline int index() const { return _index; }
 
   DEBUG_ONLY(bool is_valid() const); // Tasks to be pushed/popped must be valid.
@@ -539,7 +598,8 @@ private:
 // Wrapper over an oop that is a partially scanned array.
 // Can be converted to a ScannerTask for placement in associated task queues.
 // Refers to the partially copied source array oop.
-class PartialArrayScanTask {
+class PartialArrayScanTask
+{
   oop _src;
 
 public:
@@ -553,8 +613,9 @@ public:
 // Discriminated union over oop*, narrowOop*, and PartialArrayScanTask.
 // Uses a low tag in the associated pointer to identify the category.
 // Used as a task queue element type.
-class ScannerTask {
-  void* _p;
+class ScannerTask
+{
+  void *_p;
 
   static const uintptr_t OopTag = 0;
   static const uintptr_t NarrowOopTag = 1;
@@ -563,59 +624,68 @@ class ScannerTask {
   static const uintptr_t TagAlignment = 1 << TagSize;
   static const uintptr_t TagMask = TagAlignment - 1;
 
-  static void* encode(void* p, uintptr_t tag) {
+  static void *encode(void *p, uintptr_t tag)
+  {
     assert(is_aligned(p, TagAlignment), "misaligned: " PTR_FORMAT, p2i(p));
-    return static_cast<char*>(p) + tag;
+    return static_cast<char *>(p) + tag;
   }
 
-  uintptr_t raw_value() const {
+  uintptr_t raw_value() const
+  {
     return reinterpret_cast<uintptr_t>(_p);
   }
 
-  bool has_tag(uintptr_t tag) const {
+  bool has_tag(uintptr_t tag) const
+  {
     return (raw_value() & TagMask) == tag;
   }
 
-  void* decode(uintptr_t tag) const {
+  void *decode(uintptr_t tag) const
+  {
     assert(has_tag(tag), "precondition");
-    return static_cast<char*>(_p) - tag;
+    return static_cast<char *>(_p) - tag;
   }
 
 public:
   ScannerTask() : _p(NULL) {}
 
-  explicit ScannerTask(oop* p) : _p(encode(p, OopTag)) {}
+  explicit ScannerTask(oop *p) : _p(encode(p, OopTag)) {}
 
-  explicit ScannerTask(narrowOop* p) : _p(encode(p, NarrowOopTag)) {}
+  explicit ScannerTask(narrowOop *p) : _p(encode(p, NarrowOopTag)) {}
 
-  explicit ScannerTask(PartialArrayScanTask t) :
-    _p(encode(t.to_source_array(), PartialArrayTag)) {}
+  explicit ScannerTask(PartialArrayScanTask t) : _p(encode(t.to_source_array(), PartialArrayTag)) {}
 
   // Trivially copyable.
 
   // Predicate implementations assume OopTag == 0, others are powers of 2.
 
-  bool is_oop_ptr() const {
+  bool is_oop_ptr() const
+  {
     return (raw_value() & (NarrowOopTag | PartialArrayTag)) == 0;
   }
 
-  bool is_narrow_oop_ptr() const {
+  bool is_narrow_oop_ptr() const
+  {
     return (raw_value() & NarrowOopTag) != 0;
   }
 
-  bool is_partial_array_task() const {
+  bool is_partial_array_task() const
+  {
     return (raw_value() & PartialArrayTag) != 0;
   }
 
-  oop* to_oop_ptr() const {
-    return static_cast<oop*>(decode(OopTag));
+  oop *to_oop_ptr() const
+  {
+    return static_cast<oop *>(decode(OopTag));
   }
 
-  narrowOop* to_narrow_oop_ptr() const {
-    return static_cast<narrowOop*>(decode(NarrowOopTag));
+  narrowOop *to_narrow_oop_ptr() const
+  {
+    return static_cast<narrowOop *>(decode(NarrowOopTag));
   }
 
-  PartialArrayScanTask to_partial_array_task() const {
+  PartialArrayScanTask to_partial_array_task() const
+  {
     return PartialArrayScanTask(cast_to_oop(decode(PartialArrayTag)));
   }
 };
