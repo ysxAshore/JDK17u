@@ -128,7 +128,15 @@ public:
   G1RedirtyCardsLocalQueueSet *getRdcQueueSetPtr() { return &_rdc_local_qset; }
 
   // @insert: debug function
-  void do_oop_evac_debug(oop *p);
+  oop do_copy_to_survivor_space_debug(G1HeapRegionAttr region_attr,
+                                      oop obj,
+                                      markWord old_mark,
+                                      Klass *, size_t, uint, G1HeapRegionAttr, HeapRegion *, uint, HeapWord *);
+  HeapWord *allocate_copy_slow(G1HeapRegionAttr *dest_attr,
+                               oop old,
+                               size_t word_sz,
+                               uint age,
+                               uint node_index);
 
   G1ParScanThreadState(G1CollectedHeap *g1h,
                        G1RedirtyCardsQueueSet *rdcqs,
@@ -198,12 +206,6 @@ public:
 private:
   void do_partial_array(PartialArrayScanTask task);
   void start_partial_objarray(G1HeapRegionAttr dest_dir, oop from, oop to);
-
-  HeapWord *allocate_copy_slow(G1HeapRegionAttr *dest_attr,
-                               oop old,
-                               size_t word_sz,
-                               uint age,
-                               uint node_index);
 
   void undo_allocation(G1HeapRegionAttr dest_addr,
                        HeapWord *obj_ptr,

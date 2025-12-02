@@ -4152,6 +4152,43 @@ public:
 #define SCANNER_TASK_SIZE 8 // scannertask 属性只有一个void *p
 #define REGION_ATTR_SIZE 2
 #define OBJECT_PTR_SIZE 8
+  void aop_work_enqueue_card(uintptr_t region_attr_ptr, uintptr_t p, G1ParScanThreadState *pss)
+  {
+    uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
+    if (needs_remset_update == 0)
+      return;
+
+    uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+    uintptr_t _byte_map = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
+    uintptr_t _byte_map_base = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
+
+    uintptr_t res = _byte_map_base + (p >> 9);
+    size_t card_index = res - _byte_map;
+
+    if (*(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) != card_index)
+    {
+      uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+      uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
+      size_t index = *(size_t *)(queue_ptr + INDEX_OFFSET) / 8;
+      // @notice: every 256 encouter once index == 0
+      if (index == 0)
+      {
+        // tty->print_cr("hwgc -> soft : update rdc queue set");
+        // @notice: in this function possibly call mem alloc
+        // @todo: not all needs malloc(2/3)
+        pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
+      }
+      else
+      {
+        uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
+        --index;
+        *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
+        *(size_t *)(queue_ptr + INDEX_OFFSET) = index * 8;
+      }
+
+      *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
+    }
+  }
   void do_oop_work(uintptr_t src, uintptr_t dest, uint scanning_in_young, G1ParScanThreadState *pss)
   {
     uintptr_t heap_oop = *(uintptr_t *)(src);
@@ -4206,41 +4243,135 @@ public:
       if (scanning_in_young == 1)
         return;
 
-      uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
-      if (needs_remset_update == 0)
-        return;
-
-      uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
-      uintptr_t _byte_map = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
-      uintptr_t _byte_map_base = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
-
-      uintptr_t res = _byte_map_base + (dest >> 9);
-      size_t card_index = res - _byte_map;
-
-      if (*(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) != card_index)
-      {
-        tty->print_cr("needs update last enqueue card offset");
-        // @notice: in this function possibly call mem alloc
-        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
-        uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
-        size_t index = *(size_t *)(queue_ptr + INDEX_OFFSET) / 8;
-        if (index == 0)
-        {
-          tty->print_cr("hwgc -> soft : update rdc queue set");
-          pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
-        }
-        else
-        {
-          uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
-          --index;
-          *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
-          *(size_t *)(queue_ptr + INDEX_OFFSET) = index * 8;
-        }
-
-        *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
-      }
+      aop_work_enqueue_card(region_attr_ptr, dest, pss);
     }
   }
+
+  uintptr_t do_copy_to_survivor_space(uintptr_t region_attr_ptr, uintptr_t old, uintptr_t old_mark, G1ParScanThreadState *pss)
+  {
+    uintptr_t klass_ptr = *(uintptr_t *)(old + KlassOff);
+
+    uint64_t lh_kid = *(uint64_t *)(klass_ptr + LhKidOff);
+    int lh = (int)lh_kid;
+    int kid = lh_kid >> 32;
+    size_t size;
+
+    if (lh > 0)
+      size = lh >> LogHeapWordSize;
+    else if (lh < 0)
+    {
+      // is array
+      int array_length = *(int *)(old + ArrayLenOff);
+      // lh[7:0]是log2(esz)
+      // lh[23:16]是hsz
+      size_t size_in_bytes = (array_length << (uint8_t)lh) + (uint8_t)(lh >> 16);
+      size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
+    }
+
+    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
+
+    uintptr_t dest_attr_ptr;
+    uint age = 0;
+
+    // 默认目标：根据 region_attr_type 计算
+    uintptr_t dest_ptr = (uintptr_t)pss + 0x178;
+    dest_attr_ptr = dest_ptr + region_attr_type * REGION_ATTR_SIZE;
+
+    // 计算age
+    if (region_attr_type == TYPE_YOUNG)
+    {
+      // m.has_displaced_mark_helper
+      if ((old_mark & UNLOCKED_VALUE) == 0x0)
+      {
+        // m.display_mark_helper
+        bool has_monitor = old_mark & MONITOR_VALUE;
+        uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
+        uint64_t mark = *(uint64_t *)ptr;
+        age = (mark >> AGE_SHIFT) & AGE_MASK;
+      }
+      else
+        // m.age()
+        age = (old_mark >> AGE_SHIFT) & AGE_MASK;
+      uint threshold = *(uint *)((uintptr_t)pss + 0x17c);
+      if (age < threshold)
+        dest_attr_ptr = region_attr_ptr;
+    }
+
+    uintptr_t from_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (old >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    // uint node_index = *(uint *)(from_region + NODE_INDEX_OFFSET);
+    // @notice: single thread -> node_index always 0
+    uint node_index = 0;
+
+    // 5. 分配得到obj_ptr
+    uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+
+    int8_t dest_attr_type = *(int8_t *)(dest_attr_ptr + TYPE_OFFSET);
+    uintptr_t buffer;
+    // if (dest_attr_type == TYPE_YOUNG)
+    //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][node_index];
+    //   buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE) + node_index * OBJECT_PTR_SIZE);
+    // else
+    //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][0];
+    //   buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+
+    uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+    uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+    uintptr_t obj_ptr;
+    if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
+    {
+      obj_ptr = region_top;
+      *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
+    }
+    else
+      obj_ptr = 0;
+
+    if (obj_ptr == 0)
+      obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
+
+    return (uintptr_t)pss->do_copy_to_survivor_space_debug(*(G1HeapRegionAttr *)region_attr_ptr, (oop)old, markWord(old_mark), (Klass *)klass_ptr, size, age, *(G1HeapRegionAttr *)dest_attr_ptr, (HeapRegion *)from_region, node_index, (HeapWord *)obj_ptr);
+  }
+
+  void do_oop_evac(uintptr_t task, G1ParScanThreadState *pss)
+  {
+    uintptr_t obj = *(uintptr_t *)task;
+
+    uintptr_t regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
+    uint regionAttrShiftBy = pss->getRegionAttrShiftBy();
+
+    // 1. get region_attr_ptr
+    uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * REGION_ATTR_SIZE;
+    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
+
+    if (region_attr_type < TYPE_YOUNG) // not in cset
+      return;
+
+    uintptr_t m_value = *(uintptr_t *)(obj + MarkWordOff);
+    // m.is_marked
+    if ((m_value & LOCK_MASK_IN_PLACE) == MARKED_VALUE)
+    {
+      uintptr_t clear_lock_bits = m_value & ~LOCK_MASK_IN_PLACE;
+      obj = clear_lock_bits;
+    }
+    else
+      // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr, (oop)obj, markWord(m_value));
+      obj = do_copy_to_survivor_space(region_attr_ptr, obj, m_value, pss);
+
+    *(uintptr_t *)task = obj;
+
+    if (((task ^ obj) >> LogOfHRGrainBytes) == 0)
+      return;
+
+    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (task >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+    if (!typeIsYoung)
+    {
+      region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * REGION_ATTR_SIZE;
+      aop_work_enqueue_card(region_attr_ptr, task, pss);
+    }
+  }
+
   void do_partial_array(uintptr_t task, G1ParScanThreadState *pss)
   {
     uintptr_t from_obj = task - 0x2;
@@ -4278,7 +4409,7 @@ public:
     }
 
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
-    bool typeIsYoung = *(uint *)(heap_region + 0xbc) & 0x2 != 0;
+    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
     uintptr_t scanning_in_young = typeIsYoung;
     *(uint8_t *)((uintptr_t)pss + 0x180 + 0x20) = scanning_in_young;
 
@@ -4304,14 +4435,9 @@ public:
       assert(1);
     }
     else if ((task & 0x3) == 0x0)
-    {
-      pss->do_oop_evac_debug((oop *)task);
-    }
+      do_oop_evac(task, pss);
     else
-    {
-      // pss->do_partial_array_debug(PartialArrayScanTask((oop)(task - 0x2)));
       do_partial_array(task, pss);
-    }
   }
 
   void work(uint worker_id)

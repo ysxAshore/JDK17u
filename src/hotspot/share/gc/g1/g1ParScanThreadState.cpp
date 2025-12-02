@@ -188,43 +188,6 @@ void G1ParScanThreadState::verify_task(ScannerTask task) const
 }
 #endif // ASSERT
 
-void G1ParScanThreadState::do_oop_evac_debug(oop *p)
-{
-  // Reference should not be NULL here as such are never pushed to the task queue.
-  oop obj = RawAccess<IS_NOT_NULL>::oop_load(p);
-
-  // Although we never intentionally push references outside of the collection
-  // set, due to (benign) races in the claim mechanism during RSet scanning more
-  // than one thread might claim the same card. So the same card may be
-  // processed multiple times, and so we might get references into old gen here.
-  // So we need to redo this check.
-  const G1HeapRegionAttr region_attr = _g1h->region_attr(obj);
-  // References pushed onto the work stack should never point to a humongous region
-  // as they are not added to the collection set due to above precondition.
-  assert(!region_attr.is_humongous(),
-         "Obj " PTR_FORMAT " should not refer to humongous region %u from " PTR_FORMAT,
-         p2i(obj), _g1h->addr_to_region(cast_from_oop<HeapWord *>(obj)), p2i(p));
-
-  if (!region_attr.is_in_cset())
-  {
-    // In this case somebody else already did all the work.
-    return;
-  }
-
-  markWord m = obj->mark();
-  if (m.is_marked())
-  {
-    obj = cast_to_oop(m.decode_pointer());
-  }
-  else
-  {
-    obj = do_copy_to_survivor_space(region_attr, obj, m);
-  }
-  RawAccess<IS_NOT_NULL>::oop_store(p, obj);
-
-  write_ref_field_post(p, obj);
-}
-
 template <class T>
 MAYBE_INLINE_EVACUATION void G1ParScanThreadState::do_oop_evac(T *p)
 {
@@ -502,6 +465,96 @@ void G1ParScanThreadState::undo_allocation(G1HeapRegionAttr dest_attr,
                                            uint node_index)
 {
   _plab_allocator->undo_allocation(dest_attr, obj_ptr, word_sz, node_index);
+}
+
+oop G1ParScanThreadState::do_copy_to_survivor_space_debug(G1HeapRegionAttr const region_attr,
+                                                          oop const old,
+                                                          markWord const old_mark,
+                                                          Klass *klass,
+                                                          size_t word_sz,
+                                                          uint age,
+                                                          G1HeapRegionAttr dest_attr,
+                                                          HeapRegion *from_region,
+                                                          uint node_index,
+                                                          HeapWord *obj_ptr)
+{
+  const oop obj = cast_to_oop(obj_ptr);
+  const oop forward_ptr = old->forward_to_atomic(obj, old_mark, memory_order_relaxed);
+  if (forward_ptr == NULL)
+  {
+    Copy::aligned_disjoint_words(cast_from_oop<HeapWord *>(old), obj_ptr, word_sz);
+
+    {
+      const uint young_index = from_region->young_index_in_cset();
+      assert((from_region->is_young() && young_index > 0) ||
+                 (!from_region->is_young() && young_index == 0),
+             "invariant");
+      _surviving_young_words[young_index] += word_sz;
+    }
+
+    if (dest_attr.is_young())
+    {
+      if (age < markWord::max_age)
+      {
+        age++;
+      }
+      if (old_mark.has_displaced_mark_helper())
+      {
+        // In this case, we have to install the old mark word containing the
+        // displacement tag, and update the age in the displaced mark word.
+        markWord new_mark = old_mark.displaced_mark_helper().set_age(age);
+        old_mark.set_displaced_mark_helper(new_mark);
+        obj->set_mark(old_mark);
+      }
+      else
+      {
+        obj->set_mark(old_mark.set_age(age));
+      }
+      _age_table.add(age, word_sz);
+    }
+    else
+    {
+      obj->set_mark(old_mark);
+    }
+
+    // Most objects are not arrays, so do one array check rather than
+    // checking for each array category for each object.
+    if (klass->is_array_klass())
+    {
+      if (klass->is_objArray_klass())
+      {
+        start_partial_objarray(dest_attr, old, obj);
+      }
+      else
+      {
+        // Nothing needs to be done for typeArrays.  Body doesn't contain
+        // any oops to scan, and the type in the klass will already be handled
+        // by processing the built-in module.
+        assert(klass->is_typeArray_klass(), "invariant");
+      }
+      return obj;
+    }
+
+    // Check for deduplicating young Strings.
+    if (G1StringDedup::is_candidate_from_evacuation(klass,
+                                                    region_attr,
+                                                    dest_attr,
+                                                    age))
+    {
+      // Record old; request adds a new weak reference, which reference
+      // processing expects to refer to a from-space object.
+      _string_dedup_requests.add(old);
+    }
+
+    G1ScanInYoungSetter x(&_scanner, dest_attr.is_young());
+    obj->oop_iterate_backwards(&_scanner, klass);
+    return obj;
+  }
+  else
+  {
+    _plab_allocator->undo_allocation(dest_attr, obj_ptr, word_sz, node_index);
+    return forward_ptr;
+  }
 }
 
 // Private inline function, for direct internal use and providing the
