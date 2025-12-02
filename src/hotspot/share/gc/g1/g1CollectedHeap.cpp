@@ -4068,6 +4068,251 @@ public:
                                                 _num_workers(num_workers)
   {
   }
+/* ----------------- ScannerTask Tag ----------------- */
+#define OopTag 0
+#define NarrowOopTag 1
+#define PartialArrayTag 2
+
+/* --------------------- OopDesc --------------------- */
+#define MarkWordOff 0
+#define KlassOff 8
+#define ElementOff 16
+
+#define ArrayLenOff 16
+#define ArrayElementOff 24
+
+#define REFERENT_OFFSET 16
+#define DISCOVERED_OFFSET 40
+#define OopSizeOff 36
+#define staticOopFieldCountOff 40
+
+/*----------------- Klass Offset -----------------*/
+#define LhKidOff 8
+#define VTableLenOff 160
+#define NonstaticOopMapSizeOff 296
+#define ITableLenOff 300
+#define REFERENCE_TYPE 315
+#define VTableOff 464
+#define StaticFieldOff 184
+
+/*----------------- KID --------------------------*/
+#define InstanceKlassID 0
+#define InstanceRefKlassID 1
+#define InstanceMirrorKlassID 2
+#define InstanceClassLoaderKlassID 3
+#define TypeArrayKlassID 4
+#define ObjectArrayKlassID 5
+
+/*------------------- Region Attr ----------------*/
+#define TYPE_OPTIONAL -3
+#define TYPE_HUMONGOUS -2
+#define TYPE_NOTINCSET -1
+#define TYPE_YOUNG 0
+#define TYPE_OLD 1
+#define TYPE_OFFSET 1
+
+/*------------------- MarkWord -------------------*/
+#define LOCK_MASK_IN_PLACE 0x3
+#define LOCKED_VALUE 0x0
+#define UNLOCKED_VALUE 0x1
+#define MONITOR_VALUE 0x2
+#define MARKED_VALUE 0x3
+#define AGE_SHIFT 3
+#define AGE_MASK 0x1111
+#define AGE_MASK_IN_PLACE (AGE_MASK << AGE_SHIFT)
+
+/*------------------ Heap Region -----------------*/
+#define NODE_INDEX_OFFSET 288
+#define YOUND_INDEX_IN_CSET_OFFSET 256
+#define HEAP_REGION_TYPE_OFFSET 188
+#define LogOfHRGrainBytes 0x16
+
+/*-------------- G1ParScanThreadState ------------*/
+#define QSET_OFFSET 0x18
+#define CARD_TABLE_OFFSET 0x60
+#define OBJCLOSURE_OFFSET 0x180
+#define LAST_ENQUEUED_CARD_OFFSET 0x1b0
+#define PARTIAL_ARRAY_CHUNK_SIZE_OFFSET 0x1ec
+#define PARTIAL_ARRAY_STEPPER_OFFSET 0x1f0
+
+/*-------------------- ObjClosure -----------------*/
+#define SCANNING_IN_YOUNG_OFFSET 0x20
+
+/*--------------------- CardTable -----------------*/
+#define BYTE_MAP_OFFSET 0x38
+#define BYTE_MAP_BASE_OFFSET 0x40
+
+/*------------------- RDC Qset --------------------*/
+#define QSET_QUEUE_OFFSET 0x30
+
+/*--------------------- PtrQueue---------------------------*/
+#define INDEX_OFFSET 0x0
+#define BUFFER_OFFSET 0x10
+
+#define SCANNER_TASK_SIZE 8 // scannertask 属性只有一个void *p
+#define REGION_ATTR_SIZE 2
+#define OBJECT_PTR_SIZE 8
+  void do_oop_work(uintptr_t src, uintptr_t dest, uint scanning_in_young, G1ParScanThreadState *pss)
+  {
+    uintptr_t heap_oop = *(uintptr_t *)(src);
+    if (heap_oop == 0)
+      return;
+
+    uintptr_t obj = heap_oop;
+
+    // 16
+    // tty->print_cr("%x", LogOfHRGrainBytes);
+
+    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * REGION_ATTR_SIZE;
+    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+
+    if (region_attr_type >= 0)
+    {
+      // push 这里只push taskqueue_t
+      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+      uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
+
+      uint localBot = *(uint *)bottom_addr;
+      uint age_top = *(uint *)age_top_addr;
+      uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+      assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
+
+      uintptr_t base = pss->getTaskQueueElemsBase();
+      *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = dest;
+      localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
+      *(uint *)bottom_addr = localBot;
+    }
+    else if (((dest ^ obj) >> LogOfHRGrainBytes) != 0)
+    {
+      // 不会是-3 optional
+      assert(region_attr_type != -3);
+      if (region_attr_type == -2)
+      {
+        uint region_bias = pss->getHeapRegionBias();
+        uint region_shiftby = pss->getHeapRegionShiftBy();
+        size_t pointer_delta = obj - (region_bias << region_shiftby);
+        uint region = pointer_delta >> LogOfHRGrainBytes;
+
+        uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
+
+        if (*(bool *)(bool_base + region))
+        {
+          *(bool *)(bool_base + region) = false;
+          uintptr_t region_attr = pss->getRegionAttrBase() + region * REGION_ATTR_SIZE;
+          *(int8_t *)(region_attr + TYPE_OFFSET) = TYPE_NOTINCSET;
+        }
+      }
+
+      if (scanning_in_young == 1)
+        return;
+
+      uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
+      if (needs_remset_update == 0)
+        return;
+
+      uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+      uintptr_t _byte_map = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
+      uintptr_t _byte_map_base = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
+
+      uintptr_t res = _byte_map_base + (dest >> 9);
+      size_t card_index = res - _byte_map;
+
+      if (*(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) != card_index)
+      {
+        tty->print_cr("needs update last enqueue card offset");
+        // @notice: in this function possibly call mem alloc
+        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+        uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
+        size_t index = *(size_t *)(queue_ptr + INDEX_OFFSET) / 8;
+        if (index == 0)
+        {
+          tty->print_cr("hwgc -> soft : update rdc queue set");
+          pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
+        }
+        else
+        {
+          uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
+          --index;
+          *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
+          *(size_t *)(queue_ptr + INDEX_OFFSET) = index * 8;
+        }
+
+        *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
+      }
+    }
+  }
+  void do_partial_array(uintptr_t task, G1ParScanThreadState *pss)
+  {
+    uintptr_t from_obj = task - 0x2;
+    uintptr_t m_value = *(uintptr_t *)from_obj;
+    uintptr_t clear_lock_bits = m_value & ~LOCK_MASK_IN_PLACE;
+    uintptr_t to_obj = clear_lock_bits;
+
+    int array_length = *(int *)(from_obj + ArrayLenOff);
+    //@notice: to_obj 和 array_length 是不一样的 这里不能复用之前的array_length
+    int start = *(int *)(to_obj + ArrayLenOff);
+    int chunk_size = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+    *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
+
+    uint task_num = start / chunk_size;
+    uint remaining_tasks = (array_length - start) / chunk_size;
+    uint _task_limit = *(uint *)((uintptr_t)pss + PARTIAL_ARRAY_STEPPER_OFFSET);
+    uint _task_fanout = *(uint *)((uintptr_t)pss + PARTIAL_ARRAY_STEPPER_OFFSET + 0x4);
+    uint max_pending = (_task_fanout - 1) * task_num + 1;
+    uint pending = MIN3(max_pending, remaining_tasks, _task_limit);
+    uint ncreate = MIN2(_task_fanout, MIN2(remaining_tasks, _task_limit + 1) - pending);
+
+    for (uint i = 0; i < ncreate; ++i)
+    {
+      // push 这里只push taskqueue_t
+      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+      uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
+      uint localBot = *(uint *)bottom_addr;
+      uint age_top = *(uint *)age_top_addr;
+      uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+      assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
+      uintptr_t base = pss->getTaskQueueElemsBase();
+      *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = from_obj + PartialArrayTag;
+      localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
+      *(uint *)bottom_addr = localBot;
+    }
+
+    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    bool typeIsYoung = *(uint *)(heap_region + 0xbc) & 0x2 != 0;
+    uintptr_t scanning_in_young = typeIsYoung;
+    *(uint8_t *)((uintptr_t)pss + 0x180 + 0x20) = scanning_in_young;
+
+    uintptr_t low = to_obj + ArrayElementOff + start * OBJECT_PTR_SIZE;
+    uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OBJECT_PTR_SIZE;
+    uintptr_t p = to_obj + ArrayElementOff;
+    uintptr_t q = p + (start + chunk_size) * OBJECT_PTR_SIZE;
+    if (p < low)
+      p = low;
+    if (q > high)
+      q = high;
+    while (p < q)
+    {
+      do_oop_work(p - to_obj + from_obj, p, scanning_in_young, pss);
+      p += OBJECT_PTR_SIZE;
+    }
+  }
+
+  void dispatch_task(uintptr_t task, G1ParScanThreadState *pss)
+  {
+    if ((task & 0x3) == 0x1)
+    {
+      assert(1);
+    }
+    else if ((task & 0x3) == 0x0)
+    {
+      pss->do_oop_evac_debug((oop *)task);
+    }
+    else
+    {
+      // pss->do_partial_array_debug(PartialArrayScanTask((oop)(task - 0x2)));
+      do_partial_array(task, pss);
+    }
+  }
 
   void work(uint worker_id)
   {
@@ -4122,10 +4367,10 @@ public:
           tag = true;
         }
         if (tag)
-          pss->dispatch_task_debug(task);
+          dispatch_task(task, pss);
       } while (tag);
 
-      evacuate_live_objects(pss, worker_id);
+      // evacuate_live_objects(pss, worker_id);
     }
 
     end_work(worker_id);

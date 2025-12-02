@@ -34,25 +34,28 @@ class G1RedirtyCardsQueueSet;
 
 // A thread-local qset and queue.  It provides an uncontended staging
 // area for completed buffers, to be flushed to the shared qset en masse.
-class G1RedirtyCardsLocalQueueSet : private PtrQueueSet {
-  class Queue : public PtrQueue {
+class G1RedirtyCardsLocalQueueSet : private PtrQueueSet
+{
+  class Queue : public PtrQueue
+  {
   public:
-    Queue(G1RedirtyCardsLocalQueueSet* qset);
+    Queue(G1RedirtyCardsLocalQueueSet *qset);
     ~Queue() NOT_DEBUG(= default);
   };
 
-  G1RedirtyCardsQueueSet* _shared_qset;
+  G1RedirtyCardsQueueSet *_shared_qset;
   G1BufferNodeList _buffers;
   Queue _queue;
 
   // Add the buffer to the local list.
-  virtual void enqueue_completed_buffer(BufferNode* node);
+  virtual void enqueue_completed_buffer(BufferNode *node);
 
 public:
-  G1RedirtyCardsLocalQueueSet(G1RedirtyCardsQueueSet* shared_qset);
+  G1RedirtyCardsLocalQueueSet(G1RedirtyCardsQueueSet *shared_qset);
   ~G1RedirtyCardsLocalQueueSet() NOT_DEBUG(= default);
 
-  void enqueue(void* value);
+  void enqueue(void *value);
+  void enqueue_failed(void *value);
 
   // Transfer all completed buffers to the shared qset.
   void flush();
@@ -64,31 +67,32 @@ public:
 // processing starts, buffers can no longer be added.  Taking all the
 // collected (and processed) buffers reverts back to collecting, allowing
 // the set to be reused for another round of redirtying.
-class G1RedirtyCardsQueueSet : public PtrQueueSet {
+class G1RedirtyCardsQueueSet : public PtrQueueSet
+{
   DEFINE_PAD_MINUS_SIZE(1, DEFAULT_CACHE_LINE_SIZE, 0);
   BufferNode::Stack _list;
   DEFINE_PAD_MINUS_SIZE(2, DEFAULT_CACHE_LINE_SIZE, sizeof(size_t));
   volatile size_t _entry_count;
-  DEFINE_PAD_MINUS_SIZE(3, DEFAULT_CACHE_LINE_SIZE, sizeof(BufferNode*));
-  BufferNode* _tail;
+  DEFINE_PAD_MINUS_SIZE(3, DEFAULT_CACHE_LINE_SIZE, sizeof(BufferNode *));
+  BufferNode *_tail;
   DEBUG_ONLY(mutable bool _collecting;)
 
-  void update_tail(BufferNode* node);
+  void update_tail(BufferNode *node);
 
 public:
-  G1RedirtyCardsQueueSet(BufferNode::Allocator* allocator);
+  G1RedirtyCardsQueueSet(BufferNode::Allocator *allocator);
   ~G1RedirtyCardsQueueSet();
 
   void verify_empty() const NOT_DEBUG_RETURN;
 
   // Collect buffers.  These functions are thread-safe.
   // precondition: Must not be concurrent with buffer processing.
-  virtual void enqueue_completed_buffer(BufferNode* node);
-  void add_bufferlist(const G1BufferNodeList& buffers);
+  virtual void enqueue_completed_buffer(BufferNode *node);
+  void add_bufferlist(const G1BufferNodeList &buffers);
 
   // Processing phase operations.
   // precondition: Must not be concurrent with buffer collection.
-  BufferNode* all_completed_buffers() const;
+  BufferNode *all_completed_buffers() const;
   G1BufferNodeList take_all_completed_buffers();
 };
 

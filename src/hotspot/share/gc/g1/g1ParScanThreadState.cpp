@@ -188,6 +188,43 @@ void G1ParScanThreadState::verify_task(ScannerTask task) const
 }
 #endif // ASSERT
 
+void G1ParScanThreadState::do_oop_evac_debug(oop *p)
+{
+  // Reference should not be NULL here as such are never pushed to the task queue.
+  oop obj = RawAccess<IS_NOT_NULL>::oop_load(p);
+
+  // Although we never intentionally push references outside of the collection
+  // set, due to (benign) races in the claim mechanism during RSet scanning more
+  // than one thread might claim the same card. So the same card may be
+  // processed multiple times, and so we might get references into old gen here.
+  // So we need to redo this check.
+  const G1HeapRegionAttr region_attr = _g1h->region_attr(obj);
+  // References pushed onto the work stack should never point to a humongous region
+  // as they are not added to the collection set due to above precondition.
+  assert(!region_attr.is_humongous(),
+         "Obj " PTR_FORMAT " should not refer to humongous region %u from " PTR_FORMAT,
+         p2i(obj), _g1h->addr_to_region(cast_from_oop<HeapWord *>(obj)), p2i(p));
+
+  if (!region_attr.is_in_cset())
+  {
+    // In this case somebody else already did all the work.
+    return;
+  }
+
+  markWord m = obj->mark();
+  if (m.is_marked())
+  {
+    obj = cast_to_oop(m.decode_pointer());
+  }
+  else
+  {
+    obj = do_copy_to_survivor_space(region_attr, obj, m);
+  }
+  RawAccess<IS_NOT_NULL>::oop_store(p, obj);
+
+  write_ref_field_post(p, obj);
+}
+
 template <class T>
 MAYBE_INLINE_EVACUATION void G1ParScanThreadState::do_oop_evac(T *p)
 {
@@ -305,23 +342,6 @@ void G1ParScanThreadState::dispatch_task(ScannerTask task)
   else
   {
     do_partial_array(task.to_partial_array_task());
-  }
-}
-
-void G1ParScanThreadState::dispatch_task_debug(uintptr_t task)
-{
-  if ((task & 0x3) == 0x1)
-  {
-    // not handle compressed oop
-    assert(1);
-  }
-  else if ((task & 0x3) == 0x0)
-  {
-    do_oop_evac((oop *)task);
-  }
-  else
-  {
-    do_partial_array(PartialArrayScanTask((oop)(task - 0x2)));
   }
 }
 

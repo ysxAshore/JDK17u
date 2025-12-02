@@ -37,43 +37,51 @@
 #include "utilities/macros.hpp"
 
 template <typename T, class OopClosureType>
-void ObjArrayKlass::oop_oop_iterate_elements(objArrayOop a, OopClosureType* closure) {
-  T* p         = (T*)a->base();
-  T* const end = p + a->length();
+void ObjArrayKlass::oop_oop_iterate_elements(objArrayOop a, OopClosureType *closure)
+{
+  T *p = (T *)a->base();
+  T *const end = p + a->length();
 
-  for (;p < end; p++) {
+  for (; p < end; p++)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
 void ObjArrayKlass::oop_oop_iterate_elements_bounded(
-    objArrayOop a, OopClosureType* closure, void* low, void* high) {
+    objArrayOop a, OopClosureType *closure, void *low, void *high)
+{
 
-  T* const l = (T*)low;
-  T* const h = (T*)high;
+  T *const l = (T *)low;
+  T *const h = (T *)high;
 
-  T* p   = (T*)a->base();
-  T* end = p + a->length();
+  T *p = (T *)a->base();
+  T *end = p + a->length();
 
-  if (p < l) {
+  if (p < l)
+  {
     p = l;
   }
-  if (end > h) {
+  if (end > h)
+  {
     end = h;
   }
 
-  for (;p < end; ++p) {
+  for (; p < end; ++p)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, typename OopClosureType>
-void ObjArrayKlass::oop_oop_iterate(oop obj, OopClosureType* closure) {
-  assert (obj->is_array(), "obj must be array");
+void ObjArrayKlass::oop_oop_iterate(oop obj, OopClosureType *closure)
+{
+  assert(obj->is_array(), "obj must be array");
   objArrayOop a = objArrayOop(obj);
 
-  if (Devirtualizer::do_metadata(closure)) {
+  if (Devirtualizer::do_metadata(closure))
+  {
     Devirtualizer::do_klass(closure, obj->klass());
   }
 
@@ -81,17 +89,20 @@ void ObjArrayKlass::oop_oop_iterate(oop obj, OopClosureType* closure) {
 }
 
 template <typename T, typename OopClosureType>
-void ObjArrayKlass::oop_oop_iterate_reverse(oop obj, OopClosureType* closure) {
+void ObjArrayKlass::oop_oop_iterate_reverse(oop obj, OopClosureType *closure)
+{
   // No reverse implementation ATM.
   oop_oop_iterate<T>(obj, closure);
 }
 
 template <typename T, typename OopClosureType>
-void ObjArrayKlass::oop_oop_iterate_bounded(oop obj, OopClosureType* closure, MemRegion mr) {
+void ObjArrayKlass::oop_oop_iterate_bounded(oop obj, OopClosureType *closure, MemRegion mr)
+{
   assert(obj->is_array(), "obj must be array");
-  objArrayOop a  = objArrayOop(obj);
+  objArrayOop a = objArrayOop(obj);
 
-  if (Devirtualizer::do_metadata(closure)) {
+  if (Devirtualizer::do_metadata(closure))
+  {
     Devirtualizer::do_klass(closure, a->klass());
   }
 
@@ -101,20 +112,25 @@ void ObjArrayKlass::oop_oop_iterate_bounded(oop obj, OopClosureType* closure, Me
 // Like oop_oop_iterate but only iterates over a specified range and only used
 // for objArrayOops.
 template <typename T, class OopClosureType>
-void ObjArrayKlass::oop_oop_iterate_range(objArrayOop a, OopClosureType* closure, int start, int end) {
-  T* low = (T*)a->base() + start;
-  T* high = (T*)a->base() + end;
+void ObjArrayKlass::oop_oop_iterate_range(objArrayOop a, OopClosureType *closure, int start, int end)
+{
+  T *low = (T *)a->base() + start;
+  T *high = (T *)a->base() + end;
 
   oop_oop_iterate_elements_bounded<T>(a, closure, low, high);
 }
 
 // Placed here to resolve include cycle between objArrayKlass.inline.hpp and objArrayOop.inline.hpp
 template <typename OopClosureType>
-void objArrayOopDesc::oop_iterate_range(OopClosureType* blk, int start, int end) {
-  if (UseCompressedOops) {
-    ((ObjArrayKlass*)klass())->oop_oop_iterate_range<narrowOop>(this, blk, start, end);
-  } else {
-    ((ObjArrayKlass*)klass())->oop_oop_iterate_range<oop>(this, blk, start, end);
+void objArrayOopDesc::oop_iterate_range(OopClosureType *blk, int start, int end)
+{
+  if (UseCompressedOops)
+  {
+    ((ObjArrayKlass *)klass())->oop_oop_iterate_range<narrowOop>(this, blk, start, end);
+  }
+  else
+  {
+    ((ObjArrayKlass *)klass())->oop_oop_iterate_range<oop>(this, blk, start, end);
   }
 }
 
