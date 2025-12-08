@@ -4175,6 +4175,7 @@ public:
         // tty->print_cr("hwgc -> soft : update rdc queue set");
         // @notice: in this function possibly call mem alloc
         // @todo: not all needs malloc(2/3)
+        log_info(gc, task)("enqueue failed");
         pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
       }
       else
@@ -4328,7 +4329,10 @@ public:
       obj_ptr = 0;
 
     if (obj_ptr == 0)
+    {
+      log_info(gc, task)("do allocate_copy_slow");
       obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
+    }
 
     uintptr_t forward_ptr = 0;
     uintptr_t m = (obj_ptr & ~LOCK_MASK_IN_PLACE) | MARKED_VALUE;
@@ -4588,6 +4592,247 @@ public:
       do_partial_array(task, pss);
   }
 
+  void printOthers(G1ParScanThreadState *pss)
+  {
+    log_info(gc, task)("G1ParScanThreadState content:");
+    for (uint i = 0; i < (uint)sizeof(G1ParScanThreadState) / 8; ++i)
+      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)((uintptr_t)pss + i * 8));
+
+    log_info(gc, task)("HeapRegion Array Content Bias ShiftBy");
+    uintptr_t biasedbase = pss->getHeapRegionBiasedBase();
+    uintptr_t base = pss->getHeapRegionBase();
+    log_info(gc, task)("heap region base:%lx, biased-base:%lx, bias:%x, shift-by:%x, length:%x", base, biasedbase, pss->getHeapRegionBias(), pss->getHeapRegionShiftBy(), pss->getHeapRegionLength());
+    for (uint i = 0; i < pss->getHeapRegionLength(); ++i)
+    {
+      log_info(gc, task)("%d heap region array content:", i);
+      uintptr_t heap_region = *(uintptr_t *)(base + i * 8);
+      if (heap_region != 0)
+        for (int j = 0; j < (int)sizeof(HeapRegion) / 8; ++j)
+          log_info(gc, task)("offset-%d(%x): %lx", j, j, *(uint64_t *)(heap_region + j * 8));
+    }
+    log_info(gc, task)("HeapRegionAttr Array Content Bias ShiftBy");
+    biasedbase = pss->getRegionAttrBiasedBase();
+    base = pss->getRegionAttrBase();
+    log_info(gc, task)("region attr base:%lx, biased-base:%lx, bias:%x, shift-by:%x, length:%x", base, biasedbase, pss->getRegionAttrBias(), pss->getRegionAttrShiftBy(), pss->getRegionAttrLength());
+    for (uint i = 0; i < pss->getRegionAttrLength(); ++i)
+    {
+      log_info(gc, task)("%d region attr array content:", i);
+      uintptr_t region_attr_ptr = base + i * REGION_ATTR_SIZE;
+      for (int j = 0; j < REGION_ATTR_SIZE; ++j)
+        log_info(gc, task)("offset-%d(%x): %x", j, j, *(char *)(region_attr_ptr + j));
+    }
+    //@todo: ct plab_allocator plab_buffer bool_base
+  }
+
+  void traverseOopDesc(uintptr_t task)
+  {
+    // 使用固定大小的栈分配数组跟踪已访问对象
+    const int MAX_VISITED = 1000000;
+    static thread_local uintptr_t visited_oops[MAX_VISITED];
+    static thread_local int visited_count = 0;
+    // 添加递归深度限制，防止栈溢出
+    static thread_local int recursion_depth = 0;
+    const int MAX_RECURSION_DEPTH = 150;
+
+    if (recursion_depth == 0)
+      visited_count = 0;
+
+    if (recursion_depth >= MAX_RECURSION_DEPTH)
+    {
+      log_info(gc, task)("Max recursion depth reached, stopping traversal");
+      return;
+    }
+
+    ++recursion_depth;
+
+    uintptr_t this_oop = *(uintptr_t *)task;
+    if (this_oop == 0)
+    {
+      log_info(gc, task)("Invalid oop: %lx", this_oop);
+      recursion_depth--;
+      return;
+    }
+    log_info(gc, task)("The task %lx content oop ptr %lx", task, this_oop);
+
+    // 检测循环引用
+    for (int i = 0; i < visited_count; i++)
+    {
+      if (visited_oops[i] == this_oop)
+      {
+        log_info(gc, task)("Cycle detected: object %lx already visited, skipping", this_oop);
+        recursion_depth--;
+        return;
+      }
+    }
+
+    // 标记为已访问
+    if (visited_count < MAX_VISITED)
+      visited_oops[visited_count++] = this_oop;
+    else
+      log_info(gc, task)("Warning: visited set full, cannot track more cycles");
+
+    uintptr_t markWord = *(uintptr_t *)this_oop;
+    uintptr_t klass_ptr = *(uintptr_t *)(this_oop + 8);
+    log_info(gc, task)("The markWord is %lx", markWord);
+    log_info(gc, task)("The klass_ptr is %lx", klass_ptr);
+
+    if (klass_ptr == 0)
+    {
+      log_info(gc, task)("Invalid klass_ptr: %lx, stopping traversal", klass_ptr);
+      recursion_depth--;
+      return;
+    }
+
+    uint64_t lh_kid = *(uint64_t *)(klass_ptr + 8);
+    int lh = (int)lh_kid;
+    int kid = lh_kid >> 32;
+    size_t size;
+    if (lh > 0)
+      size = lh >> LogHeapWordSize;
+    else if (lh < 0)
+    {
+      // is array
+      int array_length = *(int *)(this_oop + 16);
+      // lh[7:0]是log2(esz)
+      // lh[23:16]是hsz
+      size_t size_in_bytes = (array_length << (uint8_t)lh) + (uint8_t)(lh >> 16);
+      size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
+    }
+
+    if (kid == 0)
+      log_info(gc, task)("This is common instance %lx: ", this_oop);
+    else if (kid == 1)
+      log_info(gc, task)("This is ref instance %lx: ", this_oop);
+    else if (kid == 2)
+      log_info(gc, task)("This is mirror instance %lx: ", this_oop);
+    else if (kid == 3)
+      log_info(gc, task)("This is class loader instance %lx: ", this_oop);
+    else if (kid == 4)
+      log_info(gc, task)("This is type array instance %lx: ", this_oop);
+    else if (kid == 5)
+      log_info(gc, task)("This is object array instance %lx: ", this_oop);
+
+    tty->printContent(this_oop, size);
+
+    log_info(gc, task)("Print Klass");
+    log_info(gc, task)("content0(off-8) : %lx", *(uintptr_t *)(klass_ptr + 8));
+    log_info(gc, task)("content1(off-160): %lx", *(uintptr_t *)(klass_ptr + 160));
+    log_info(gc, task)("content3(off-296): %lx", *(uintptr_t *)(klass_ptr + 296));
+
+    if (kid == 5)
+    {
+      int array_length = *(int *)(this_oop + 16);
+      uintptr_t low = this_oop + 24;
+      uintptr_t high = low + array_length * 8;
+      while (low < high)
+      {
+        log_info(gc, task)("child oop index %lx, offset %lx", low, low - this_oop);
+        traverseOopDesc(low);
+        low += 8;
+      }
+    }
+    else if (kid != 4)
+    {
+      log_info(gc, task)("Print OopMap");
+
+      // oop_trace
+      int vtable_len = *(int *)(klass_ptr + 160);
+      int itable_len = *(int *)(klass_ptr + 300);
+      int nonStaticOopMapSize = *(int *)(klass_ptr + 296);
+      uintptr_t start_map = (uintptr_t)((uintptr_t *)(klass_ptr + 464) + vtable_len + itable_len);
+      uintptr_t end_map = start_map + nonStaticOopMapSize * 8;
+      while (start_map < end_map)
+      {
+        end_map -= 8;
+        int offset = *(int *)(end_map);
+        int count = *(int *)(end_map + 0x4);
+        log_info(gc, task)("offset %x count %x", offset, count);
+
+        uintptr_t start = this_oop + offset;
+        uintptr_t end = start + count * 8;
+        while (start < end)
+        {
+          end -= 8;
+          log_info(gc, task)("child oop index %lx, offset is %lx", end, end - this_oop);
+          traverseOopDesc(end);
+        }
+      }
+
+      if (kid == 1)
+      {
+        uintptr_t index = this_oop + 40;
+        log_info(gc, task)("child oop index %lx, offset is %x", index, 40);
+        traverseOopDesc(index);
+
+        index = this_oop + 16;
+        log_info(gc, task)("child oop index %lx, offset is %x", index, 16);
+        traverseOopDesc(index);
+      }
+      if (kid == 2)
+      {
+        uintptr_t static_start = this_oop + 184;
+        uint staticCount = *(uint *)(this_oop + 40);
+        uintptr_t static_end = static_start + staticCount * 8;
+        while (static_start < static_end)
+        {
+          log_info(gc, task)("child oop index %lx, offset is %lx", static_start, static_start - this_oop);
+          traverseOopDesc(static_start);
+          static_start += 8;
+        }
+      }
+    }
+    --recursion_depth;
+
+    // 如果返回到顶层，清空访问表
+    if (recursion_depth == 0)
+      visited_count = 0;
+  }
+
+  void traversePartialArray(uintptr_t task, int chunk_size)
+  {
+    uintptr_t from_obj = task;
+    log_info(gc, task)("Partial Array Src OopDesc ptr is %lx", from_obj);
+
+    uintptr_t m_value = *(uintptr_t *)from_obj;
+    uintptr_t clear_lock_bits = m_value & ~0x3;
+    uintptr_t to_obj = clear_lock_bits;
+    log_info(gc, task)("Partial Array Dest OopDesc ptr is %lx", to_obj);
+
+    int array_length = *(int *)(from_obj + 0x10);
+    int start = *(int *)(to_obj + 0x10);
+    log_info(gc, task)("Partial Array Src Length is %x", array_length);
+    log_info(gc, task)("Partial Array Src Length is %x", start);
+
+    uintptr_t klass_1 = *(uintptr_t *)(from_obj + 0x8);
+    uintptr_t klass_2 = *(uintptr_t *)(to_obj + 0x8);
+    if (klass_1 != 0)
+      log_info(gc, task)("Partial Array Klass lh kid is %lx", *(uintptr_t *)(klass_1 + 0x8));
+    if (klass_2 != 0)
+      log_info(gc, task)("Partial Array Klass lh kid is %lx", *(uintptr_t *)(klass_2 + 0x8));
+
+    log_info(gc, task)("Print Src Partial Array");
+    tty->printContent(from_obj, array_length + 3);
+    log_info(gc, task)("Print Dest Partial Array");
+    tty->printContent(from_obj, array_length + 3);
+
+    uintptr_t low = to_obj + 0x18 + start * 0x8;
+    uintptr_t high = to_obj + 0x18 + (start + chunk_size) * 0x8;
+    uintptr_t p = to_obj + 0x18;
+    uintptr_t q = p + (start + chunk_size) * 0x8;
+    if (p < low)
+      p = low;
+    if (q > high)
+      q = high;
+    while (p < q)
+    {
+      log_info(gc, task)("Dest Partial Array child index %lx offset %lx", p, p - to_obj);
+      traverseOopDesc(p);
+      log_info(gc, task)("Dest Partial Array child index %lx offset %lx", p - to_obj + from_obj, p - to_obj);
+      traverseOopDesc(p - to_obj + from_obj);
+      p += 0x8;
+    }
+  }
+
   void work(uint worker_id)
   {
     start_work(worker_id);
@@ -4600,13 +4845,45 @@ public:
 
       scan_roots(pss, worker_id);
 
+      // @notice: print other objects
+      printOthers(pss);
+
       // @notice: 可以插在这里进行HWGC工作 也就是evacuate_live_objects的功能卸载到硬件去做
       // 取任务需要的参数
       uintptr_t elems = pss->getTaskQueueElemsBase();
       uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
 
+      // @notice: print task
+      uint localBot = *(uint *)(bottom_addr);
+      uint ageTop = *(uint *)(age_top_addr);
+      log_info(gc, task)("bottom %x top %x", localBot, ageTop);
+
       bool tag = false; // 决定是否需要分发处理该task
+      // do
+      //{
+      //   uintptr_t task;
+      //   uint dirty_n_elems = (localBot - ageTop) & (TASKQUEUE_SIZE - 1);
+      //   if (dirty_n_elems <= 0)
+      //     tag = false;
+      //   else
+      //   {
+      //     localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
+      //     task = *(uintptr_t *)(elems + localBot * 8);
+      //     tag = true;
+      //   }
+      //   if (tag)
+      //   {
+      //     int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
+      //     if ((task & 0x3) == 0x0)
+      //       traverseOopDesc(task);
+      //     else if ((task & 0x3) == 0x2)
+      //       traversePartialArray(task - 0x2, chunk_size);
+      //   }
+      // } while (tag);
+
+      // @notice: do task
+      tag = false; // 决定是否需要分发处理该task
       do
       {
         uintptr_t task;
@@ -4621,23 +4898,6 @@ public:
           *(uint *)(bottom_addr) = localBot;
           // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
           task = *(uintptr_t *)(elems + localBot * 8);
-
-          // @notice: single thread -> not need update age_tag
-          // uint age_tag = *(uint *)(age_top_addr + 0x4);
-          // bool clean_size = ((localBot - age_top) & (TASKQUEUE_SIZE - 1)) == TASKQUEUE_SIZE - 1 ? 0 : (localBot - age_top) & (TASKQUEUE_SIZE - 1);
-          // if (clean_size > 0)
-          //  tag = true;
-          // else
-          //{
-          //  // @notice: 在JVM中这里有一个OrderAccess::loadload()为了防止对age的两次读取操作被重新排序：一次是下面的age()调用，另一次是if语句上面的age_top()调用
-          //  if (localBot == age_top)
-          //    tag = (age_top == *(uint *)(age_top_addr) && age_tag == *(uint *)(age_top_addr + 0x4));
-          //  else
-          //    tag = false;
-
-          //  *(uint *)(age_top_addr) = localBot;
-          //  *(uint *)(age_top_addr + 0x4) = age_tag + 1;
-          //}
           tag = true;
         }
         if (tag)

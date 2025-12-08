@@ -116,13 +116,17 @@ public:
 
   // @insert get heap region info
   uintptr_t getHeapRegionBiasedBase() { return _g1h->getHeapRegionBiasedBase(); }
+  uintptr_t getHeapRegionBase() { return _g1h->getHeapRegionBase(); }
   uint getHeapRegionShiftBy() { return _g1h->getHeapRegionShiftBy(); }
   uint getHeapRegionBias() { return _g1h->getHeapRegionBias(); }
+  uint getHeapRegionLength() { return _g1h->getHeapRegionLength(); }
 
   // @insert get region attr info
   uintptr_t getRegionAttrBiasedBase() { return _g1h->getRegionAttrBiasedBase(); }
   uintptr_t getRegionAttrBase() { return _g1h->getRegionAttrBase(); }
   uint getRegionAttrShiftBy() { return _g1h->getRegionAttrShiftBy(); }
+  uint getRegionAttrBias() { return _g1h->getRegionAttrBias(); }
+  uint getRegionAttrLength() { return _g1h->getRegionAttrLength(); }
   uintptr_t getScanner() { return (uintptr_t)&_scanner; }
 
   // @insert: get rdc

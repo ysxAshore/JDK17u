@@ -162,8 +162,10 @@ public:
 public:
   // @insert: get biased base bias and shift_by
   uintptr_t getHeapRegionBiasedBase() { return (uintptr_t)_regions.biased_base(); }
+  uintptr_t getHeapRegionBase() { return (uintptr_t)_regions.base(); }
   uint getHeapRegionShiftBy() { return _regions.shift_by(); }
   uint getHeapRegionBias() { return _regions.bias(); }
+  uint getHeapRegionLength() { return _regions.length(); }
 
   // Empty constructor, we'll initialize it with the initialize() method.
   HeapRegionManager();

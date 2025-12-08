@@ -274,13 +274,17 @@ private:
 public:
   // @insert getHeapRegionBiasedBase and shiftBy
   uintptr_t getHeapRegionBiasedBase() { return _hrm.getHeapRegionBiasedBase(); }
+  uintptr_t getHeapRegionBase() { return _hrm.getHeapRegionBase(); }
   uint getHeapRegionShiftBy() { return _hrm.getHeapRegionShiftBy(); }
   uint getHeapRegionBias() { return _hrm.getHeapRegionBias(); }
+  uint getHeapRegionLength() { return _hrm.getHeapRegionLength(); }
 
   // @insert getHeapRegionAttr
   uintptr_t getRegionAttrBiasedBase() { return (uintptr_t)_region_attr.biased_base(); }
   uintptr_t getRegionAttrBase() { return (uintptr_t)_region_attr.base(); }
   uintptr_t getRegionAttrShiftBy() { return _region_attr.shift_by(); }
+  uintptr_t getRegionAttrBias() { return _region_attr.bias(); }
+  uintptr_t getRegionAttrLength() { return _region_attr.length(); }
 
   // @insert getHumongousReclaimBase()
   uintptr_t getHumongousReclaimCandidatesBoolBase() { return (uintptr_t)_humongous_reclaim_candidates.base(); }
