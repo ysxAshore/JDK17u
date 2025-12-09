@@ -4610,6 +4610,7 @@ public:
         for (int j = 0; j < (int)sizeof(HeapRegion) / 8; ++j)
           log_info(gc, task)("offset-%d(%x): %lx", j, j, *(uint64_t *)(heap_region + j * 8));
     }
+
     log_info(gc, task)("HeapRegionAttr Array Content Bias ShiftBy");
     biasedbase = pss->getRegionAttrBiasedBase();
     base = pss->getRegionAttrBase();
@@ -4621,7 +4622,48 @@ public:
       for (int j = 0; j < REGION_ATTR_SIZE; ++j)
         log_info(gc, task)("offset-%d(%x): %x", j, j, *(char *)(region_attr_ptr + j));
     }
-    //@todo: ct plab_allocator plab_buffer bool_base
+    //@todo: plab_allocator plab_buffer
+
+    log_info(gc, task)("HumongousReclaimCandidatesBool Array");
+    base = _g1h->getHumongousReclaimCandidatesBoolBase();
+    for (uint i = 0; i < (uint)_g1h->getHumongousReclaimCandidatesBoolLength(); ++i)
+      log_info(gc, task)("offset-%d(%x): %x", i, i, *(bool *)(base + i));
+
+    log_info(gc, task)("CardTable Content:");
+    uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+    for (uint i = 0; i < sizeof(G1CardTable) / 8; ++i)
+      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)(ct_ptr + i * 8));
+
+    log_info(gc, task)("PtrQueue buffer:");
+    uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+    uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
+    uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
+    size_t index = *(uintptr_t *)(queue_ptr);
+    size_t capacity = *(uintptr_t *)(queue_ptr + 0x8);
+    log_info(gc, task)("ptrqueue buffer is %lx", buffer);
+    log_info(gc, task)("ptrqueue buffer index is %lx", index);
+    log_info(gc, task)("ptrqueue buffer capacity is %lx", capacity);
+    if (buffer != 0)
+      for (uint i = index / 8 + 1; i < capacity / 8; ++i)
+        log_info(gc, task)("content %d : %lx", i, *(uintptr_t *)(buffer + i * 8));
+
+    log_info(gc, task)("PLAB Allocator:");
+    uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+    for (uint i = 0; i < 2; ++i)
+    {
+      uintptr_t buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + i * OBJECT_PTR_SIZE));
+      log_info(gc, task)("PLAB Content:");
+      for (uint j = 0; j < sizeof(PLAB) / 8; ++j)
+        log_info(gc, task)("offset-%d(%x): %lx", j, j, *(uint64_t *)(buffer + j * 8));
+    }
+
+    log_info(gc, task)("PSS 0x1d0 Young Words Array");
+    uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+    size_t length = *(uintptr_t *)((uintptr_t)pss + 0x1e0);
+    log_info(gc, task)("array base is %lx length is %lx", young_words_base, length);
+    for (uint i = 0; i < (uint)length; ++i)
+      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)(young_words_base + i * 8));
   }
 
   void traverseOopDesc(uintptr_t task)
@@ -4672,8 +4714,17 @@ public:
       log_info(gc, task)("Warning: visited set full, cannot track more cycles");
 
     uintptr_t markWord = *(uintptr_t *)this_oop;
-    uintptr_t klass_ptr = *(uintptr_t *)(this_oop + 8);
     log_info(gc, task)("The markWord is %lx", markWord);
+
+    if (markWord & UNLOCKED_VALUE == 0x0)
+    {
+      bool has_monitor = markWord & MONITOR_VALUE;
+      uint64_t ptr = has_monitor ? markWord ^ MONITOR_VALUE : markWord;
+      uint64_t mark = *(uint64_t *)ptr;
+      log_info(gc, task)("The locked and monitor markWord is %lx", mark);
+    }
+
+    uintptr_t klass_ptr = *(uintptr_t *)(this_oop + 8);
     log_info(gc, task)("The klass_ptr is %lx", klass_ptr);
 
     if (klass_ptr == 0)

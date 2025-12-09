@@ -288,12 +288,9 @@ public:
 
   // @insert getHumongousReclaimBase()
   uintptr_t getHumongousReclaimCandidatesBoolBase() { return (uintptr_t)_humongous_reclaim_candidates.base(); }
+  size_t getHumongousReclaimCandidatesBoolLength() { return _humongous_reclaim_candidates.length(); }
 
-  uint
-  num_humongous_objects() const
-  {
-    return _num_humongous_objects;
-  }
+  uint num_humongous_objects() const { return _num_humongous_objects; }
   uint num_humongous_reclaim_candidates() const { return _num_humongous_reclaim_candidates; }
   bool has_humongous_reclaim_candidates() const { return _num_humongous_reclaim_candidates > 0; }
 
