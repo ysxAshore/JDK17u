@@ -4381,7 +4381,6 @@ public:
       *(uintptr_t *)(obj_ptr + i * OBJECT_PTR_SIZE) = *(uintptr_t *)(old + i * OBJECT_PTR_SIZE);
 
     uintptr_t scanning_in_young = dest_attr_type == TYPE_YOUNG;
-    *(uint8_t *)((uintptr_t)pss + 0x180 + 0x20) = scanning_in_young;
     // obj_array trace
     if (lh < 0)
     {
@@ -4494,10 +4493,10 @@ public:
 
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * REGION_ATTR_SIZE;
-    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
+    // int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
 
-    if (region_attr_type < TYPE_YOUNG) // not in cset
-      return;
+    // if (region_attr_type < TYPE_YOUNG) // not in cset
+    //   return;
 
     uintptr_t m_value = *(uintptr_t *)(obj + MarkWordOff);
     // m.is_marked
@@ -4535,6 +4534,7 @@ public:
     //@notice: to_obj 和 array_length 是不一样的 这里不能复用之前的array_length
     int start = *(int *)(to_obj + ArrayLenOff);
     int chunk_size = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+    //@notice: this can parrel excute
     *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
 
     uint task_num = start / chunk_size;
@@ -4563,7 +4563,6 @@ public:
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
     bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
     uintptr_t scanning_in_young = typeIsYoung;
-    *(uint8_t *)((uintptr_t)pss + 0x180 + 0x20) = scanning_in_young;
 
     uintptr_t low = to_obj + ArrayElementOff + start * OBJECT_PTR_SIZE;
     uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OBJECT_PTR_SIZE;
