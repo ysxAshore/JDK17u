@@ -16,3 +16,7 @@ or either of these files:
 
 See <https://openjdk.java.net/> for more information about
 the OpenJDK Community and the JDK.
+
+```bash
+export JAVA_TOOL_OPTIONS="-XX:-UseCompressedOops -XX:-UseCompressedClassPointers -XX:ParallelGCThreads=1 -XX:ConcGCThreads=0"
+```

@@ -21,7 +21,8 @@
  * questions.
  *
  */
-
+#include <linux/ioctl.h>
+#include <sys/ioctl.h>
 #include "precompiled.hpp"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/metadataOnStackMark.hpp"
@@ -4199,7 +4200,7 @@ public:
     uintptr_t obj = heap_oop;
 
     // 15 in mechrevo r78845h 16 in others
-    // tty->print_cr("%x", LogOfHRGrainBytes);
+    // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
 
     uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * REGION_ATTR_SIZE;
     int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
@@ -4223,7 +4224,6 @@ public:
     else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
     {
       // 不会是-3 optional
-      assert(region_attr_type != -3);
       if (region_attr_type == -2)
       {
         uint region_bias = pss->getHeapRegionBias();
@@ -4583,7 +4583,6 @@ public:
   {
     if ((task & 0x3) == 0x1)
     {
-      assert(1);
     }
     else if ((task & 0x3) == 0x0)
       do_oop_evac(task, pss);
@@ -4907,7 +4906,6 @@ public:
       // @notice: print task
       uint localBot = *(uint *)(bottom_addr);
       uint ageTop = *(uint *)(age_top_addr);
-      log_info(gc, task)("bottom %x top %x", localBot, ageTop);
 
       bool tag = false; // 决定是否需要分发处理该task
       // do
@@ -4932,27 +4930,134 @@ public:
       //   }
       // } while (tag);
 
-      // @notice: do task
-      tag = false; // 决定是否需要分发处理该task
-      do
+      int fd = open("/dev/hwgc", O_RDWR);
+      struct HWGCParameter
       {
-        uintptr_t task;
-        uint localBot = *(uint *)(bottom_addr);
-        uint age_top = *(uint *)(age_top_addr);
-        uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
-        if (dirty_n_elems <= 0)
-          tag = false;
-        else
+        uint32_t chunkSize;
+        uint32_t ageThreshold;
+        uint32_t heapRegionBias;
+        uint32_t regionAttrShiftBy;
+        uint32_t heapRegionShiftBy;
+        uint32_t logOfHRGrainBytes;
+        uint64_t stepperOffset;
+        uint64_t youngWordsBase;
+        uint64_t regionAttrBase;
+        uint64_t plabAllocatorPtr;
+        uint64_t regionAttrBiasedBase;
+        uint64_t heapRegionBiasedBase;
+        uint64_t parScanThreadStatePtr;
+        uint64_t taskQueueBottomAddr;
+        uint64_t taskQueueElemsBase;
+        uint64_t humogousReclaimCandidateBoolBase;
+        uint64_t cardTablePtr;
+      };
+      enum hwgc_state
+      {
+        HWGC_IDLE,
+        HWGC_RUNNING,
+        HWGC_WAIT_MALLOC,
+        HWGC_WAIT_ENQUEUED,
+        HWGC_WAIT_PAGEFAULT,
+        HWGC_DONE
+      };
+#define HWGC_IOC_MAGIC 'H'
+#define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct HWGCParameter)
+#define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
+#define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
+      struct HWGCParameter par = {0};
+      int state;
+      par.chunkSize = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+      par.ageThreshold = *(uint *)((uintptr_t)pss + 0x17c);
+      par.heapRegionBias = pss->getHeapRegionBias();
+      par.regionAttrShiftBy = pss->getRegionAttrShiftBy();
+      par.heapRegionShiftBy = pss->getHeapRegionShiftBy();
+      par.logOfHRGrainBytes = HeapRegion::LogOfHRGrainBytes;
+      par.stepperOffset = *(uint64_t *)((uintptr_t)pss + PARTIAL_ARRAY_STEPPER_OFFSET);
+      par.youngWordsBase = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+      par.regionAttrBase = pss->getRegionAttrBase();
+      par.plabAllocatorPtr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+      par.regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
+      par.heapRegionBiasedBase = pss->getHeapRegionBiasedBase();
+      par.parScanThreadStatePtr = (uintptr_t)pss;
+      par.taskQueueBottomAddr = bottom_addr;
+      par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
+      par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
+      par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+      Ticks start = Ticks::now();
+      tty->print_cr("work begin bottom %x", localBot);
+      ioctl(fd, HWGC_IOC_START, &par);
+      while (1)
+      {
+        ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+        if (state == HWGC_DONE)
         {
-          localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-          *(uint *)(bottom_addr) = localBot;
-          // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
-          task = *(uintptr_t *)(elems + localBot * 8);
-          tag = true;
+          Ticks end = Ticks::now();
+          jlong nanos = (end - start).nanoseconds();
+          tty->print_cr("work done, time is %ld", nanos);
+          break;
         }
-        if (tag)
-          dispatch_task(task, pss);
-      } while (tag);
+        if (state == HWGC_WAIT_ENQUEUED)
+        {
+          lseek(fd, 0x90, SEEK_SET);
+          uint64_t res;
+          read(fd, &res, sizeof(res));
+          pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
+        }
+        if (state == HWGC_WAIT_MALLOC)
+        {
+          lseek(fd, 0x90, SEEK_SET);
+          uintptr_t dest_attr_ptr, old, size, age;
+          read(fd, &dest_attr_ptr, sizeof(dest_attr_ptr));
+          read(fd, &old, sizeof(old));
+          read(fd, &size, sizeof(size));
+          read(fd, &age, sizeof(age));
+          uintptr_t obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, 0);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+        }
+        if (state == HWGC_WAIT_PAGEFAULT)
+        {
+          lseek(fd, 0x90, SEEK_SET);
+          uintptr_t vaddr, data, write, size;
+          read(fd, &vaddr, sizeof(vaddr));
+          read(fd, &data, sizeof(data));
+          read(fd, &write, sizeof(write));
+          read(fd, &size, sizeof(size));
+
+          uint64_t return_value = 0;
+          if (write)
+            memcpy((void *)vaddr, &data, size);
+          else
+            memcpy(&return_value, (void *)vaddr, size);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+        }
+      }
+      close(fd);
+
+      //@notice : do task
+      // tag = false; // 决定是否需要分发处理该task
+      // do
+      //{
+      //  uintptr_t task;
+      //  uint localBot = *(uint *)(bottom_addr);
+      //  uint age_top = *(uint *)(age_top_addr);
+      //  uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+      //  if (dirty_n_elems <= 0)
+      //    tag = false;
+      //  else
+      //  {
+      //    localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
+      //    *(uint *)(bottom_addr) = localBot;
+      //    // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
+      //    task = *(uintptr_t *)(elems + localBot * 8);
+      //    tag = true;
+      //  }
+      //  if (tag)
+      //    dispatch_task(task, pss);
+      //} while (tag);
+      // Ticks end = Ticks::now();
+      // jlong nanos = (end - start).nanoseconds();
+      // tty->print_cr("work done, time is %ld", nanos);
 
       // evacuate_live_objects(pss, worker_id);
     }
