@@ -36,12 +36,13 @@ class G1NUMA;
 // Interface to keep track of which regions G1 is currently allocating into. Provides
 // some accessors (e.g. allocating into them, or getting their occupancy).
 // Also keeps track of retained regions across GCs.
-class G1Allocator : public CHeapObj<mtGC> {
+class G1Allocator : public CHeapObj<mtGC>
+{
   friend class VMStructs;
 
 private:
-  G1CollectedHeap* _g1h;
-  G1NUMA* _numa;
+  G1CollectedHeap *_g1h;
+  G1NUMA *_numa;
 
   bool _survivor_is_full;
   bool _old_is_full;
@@ -50,17 +51,17 @@ private:
   size_t _num_alloc_regions;
 
   // Alloc region used to satisfy mutator allocation requests.
-  MutatorAllocRegion* _mutator_alloc_regions;
+  MutatorAllocRegion *_mutator_alloc_regions;
 
   // Alloc region used to satisfy allocation requests by the GC for
   // survivor objects.
-  SurvivorGCAllocRegion* _survivor_gc_alloc_regions;
+  SurvivorGCAllocRegion *_survivor_gc_alloc_regions;
 
   // Alloc region used to satisfy allocation requests by the GC for
   // old objects.
   OldGCAllocRegion _old_gc_alloc_region;
 
-  HeapRegion* _retained_old_gc_alloc_region;
+  HeapRegion *_retained_old_gc_alloc_region;
 
   bool survivor_is_full() const;
   bool old_is_full() const;
@@ -68,31 +69,31 @@ private:
   void set_survivor_full();
   void set_old_full();
 
-  void reuse_retained_old_region(G1EvacuationInfo* evacuation_info,
-                                 OldGCAllocRegion* old,
-                                 HeapRegion** retained);
+  void reuse_retained_old_region(G1EvacuationInfo *evacuation_info,
+                                 OldGCAllocRegion *old,
+                                 HeapRegion **retained);
 
   // Accessors to the allocation regions.
-  inline MutatorAllocRegion* mutator_alloc_region(uint node_index);
-  inline SurvivorGCAllocRegion* survivor_gc_alloc_region(uint node_index);
-  inline OldGCAllocRegion* old_gc_alloc_region();
+  inline MutatorAllocRegion *mutator_alloc_region(uint node_index);
+  inline SurvivorGCAllocRegion *survivor_gc_alloc_region(uint node_index);
+  inline OldGCAllocRegion *old_gc_alloc_region();
 
   // Allocation attempt during GC for a survivor object / PLAB.
-  HeapWord* survivor_attempt_allocation(size_t min_word_size,
+  HeapWord *survivor_attempt_allocation(size_t min_word_size,
                                         size_t desired_word_size,
-                                        size_t* actual_word_size,
+                                        size_t *actual_word_size,
                                         uint node_index);
 
   // Allocation attempt during GC for an old object / PLAB.
-  HeapWord* old_attempt_allocation(size_t min_word_size,
+  HeapWord *old_attempt_allocation(size_t min_word_size,
                                    size_t desired_word_size,
-                                   size_t* actual_word_size);
+                                   size_t *actual_word_size);
 
   // Node index of current thread.
   inline uint current_node_index() const;
 
 public:
-  G1Allocator(G1CollectedHeap* heap);
+  G1Allocator(G1CollectedHeap *heap);
   ~G1Allocator();
 
   uint num_nodes() { return (uint)_num_alloc_regions; }
@@ -105,27 +106,27 @@ public:
   void init_mutator_alloc_regions();
   void release_mutator_alloc_regions();
 
-  void init_gc_alloc_regions(G1EvacuationInfo* evacuation_info);
-  void release_gc_alloc_regions(G1EvacuationInfo* evacuation_info);
+  void init_gc_alloc_regions(G1EvacuationInfo *evacuation_info);
+  void release_gc_alloc_regions(G1EvacuationInfo *evacuation_info);
   void abandon_gc_alloc_regions();
-  bool is_retained_old_region(HeapRegion* hr);
+  bool is_retained_old_region(HeapRegion *hr);
 
   // Allocate blocks of memory during mutator time.
 
   // Attempt allocation in the current alloc region.
-  inline HeapWord* attempt_allocation(size_t min_word_size,
+  inline HeapWord *attempt_allocation(size_t min_word_size,
                                       size_t desired_word_size,
-                                      size_t* actual_word_size);
+                                      size_t *actual_word_size);
 
   // Attempt allocation, retiring the current region and allocating a new one. It is
   // assumed that attempt_allocation() has been tried and failed already first.
-  inline HeapWord* attempt_allocation_using_new_region(size_t word_size);
+  inline HeapWord *attempt_allocation_using_new_region(size_t word_size);
 
   // This is to be called when holding an appropriate lock. It first tries in the
   // current allocation region, and then attempts an allocation using a new region.
-  inline HeapWord* attempt_allocation_locked(size_t word_size);
+  inline HeapWord *attempt_allocation_locked(size_t word_size);
 
-  inline HeapWord* attempt_allocation_force(size_t word_size);
+  inline HeapWord *attempt_allocation_force(size_t word_size);
 
   size_t unsafe_max_tlab_alloc();
   size_t used_in_alloc_regions();
@@ -134,29 +135,31 @@ public:
   // allocation region, either by picking one or expanding the
   // heap, and then allocate a block of the given size. The block
   // may not be a humongous - it must fit into a single heap region.
-  HeapWord* par_allocate_during_gc(G1HeapRegionAttr dest,
+  HeapWord *par_allocate_during_gc(G1HeapRegionAttr dest,
                                    size_t word_size,
                                    uint node_index);
 
-  HeapWord* par_allocate_during_gc(G1HeapRegionAttr dest,
+  HeapWord *par_allocate_during_gc(G1HeapRegionAttr dest,
                                    size_t min_word_size,
                                    size_t desired_word_size,
-                                   size_t* actual_word_size,
+                                   size_t *actual_word_size,
                                    uint node_index);
 };
 
 // Manages the PLABs used during garbage collection. Interface for allocation from PLABs.
 // Needs to handle multiple contexts, extra alignment in any "survivor" area and some
 // statistics.
-class G1PLABAllocator : public CHeapObj<mtGC> {
+class G1PLABAllocator : public CHeapObj<mtGC>
+{
   friend class G1ParScanThreadState;
+
 private:
   typedef G1HeapRegionAttr::region_type_t region_type_t;
 
-  G1CollectedHeap* _g1h;
-  G1Allocator* _allocator;
+  G1CollectedHeap *_g1h;
+  G1Allocator *_allocator;
 
-  PLAB** _alloc_buffers[G1HeapRegionAttr::Num];
+  PLAB **_alloc_buffers[G1HeapRegionAttr::Num];
 
   // Number of words allocated directly (not counting PLAB allocation).
   size_t _direct_allocated[G1HeapRegionAttr::Num];
@@ -166,8 +169,8 @@ private:
   size_t _num_direct_allocations[G1HeapRegionAttr::Num];
 
   void flush_and_retire_stats();
-  inline PLAB* alloc_buffer(G1HeapRegionAttr dest, uint node_index) const;
-  inline PLAB* alloc_buffer(region_type_t dest, uint node_index) const;
+  inline PLAB *alloc_buffer(G1HeapRegionAttr dest, uint node_index) const;
+  inline PLAB *alloc_buffer(region_type_t dest, uint node_index) const;
 
   // Returns the number of allocation buffers for the given dest.
   // There is only 1 buffer for Old while Young may have multiple buffers depending on
@@ -175,8 +178,9 @@ private:
   inline uint alloc_buffers_length(region_type_t dest) const;
 
   bool may_throw_away_buffer(size_t const allocation_word_sz, size_t const buffer_size) const;
+
 public:
-  G1PLABAllocator(G1Allocator* allocator);
+  G1PLABAllocator(G1Allocator *allocator);
   ~G1PLABAllocator();
 
   size_t waste() const;
@@ -186,23 +190,27 @@ public:
   // allocating a new PLAB. Returns the address of the allocated memory, NULL if
   // not successful. Plab_refill_failed indicates whether an attempt to refill the
   // PLAB failed or not.
-  HeapWord* allocate_direct_or_new_plab(G1HeapRegionAttr dest,
+  HeapWord *allocate_direct_or_new_plab(G1HeapRegionAttr dest,
                                         size_t word_sz,
-                                        bool* plab_refill_failed,
+                                        bool *plab_refill_failed,
                                         uint node_index);
+  HeapWord *allocate_direct_or_new_plab_debug(G1HeapRegionAttr dest,
+                                              size_t word_sz,
+                                              bool *plab_refill_failed,
+                                              uint node_index, size_t, size_t, PLAB *);
 
   // Allocate word_sz words in the PLAB of dest.  Returns the address of the
   // allocated memory, NULL if not successful.
-  inline HeapWord* plab_allocate(G1HeapRegionAttr dest,
+  inline HeapWord *plab_allocate(G1HeapRegionAttr dest,
                                  size_t word_sz,
                                  uint node_index);
 
-  inline HeapWord* allocate(G1HeapRegionAttr dest,
+  inline HeapWord *allocate(G1HeapRegionAttr dest,
                             size_t word_sz,
-                            bool* refill_failed,
+                            bool *refill_failed,
                             uint node_index);
 
-  void undo_allocation(G1HeapRegionAttr dest, HeapWord* obj, size_t word_sz, uint node_index);
+  void undo_allocation(G1HeapRegionAttr dest, HeapWord *obj, size_t word_sz, uint node_index);
 };
 
 // G1ArchiveAllocator is used to allocate memory in archive
@@ -216,58 +224,61 @@ public:
 // - An 'open' archive region allow references to any other regions,
 //   including closed archive, open archive and other java heap regions.
 //   GC can adjust pointers and mark object header in 'open' archive region.
-class G1ArchiveAllocator : public CHeapObj<mtGC> {
+class G1ArchiveAllocator : public CHeapObj<mtGC>
+{
 protected:
   bool _open; // Indicate if the region is 'open' archive.
-  G1CollectedHeap* _g1h;
+  G1CollectedHeap *_g1h;
 
   // The current allocation region
-  HeapRegion* _allocation_region;
+  HeapRegion *_allocation_region;
 
   // Regions allocated for the current archive range.
-  GrowableArray<HeapRegion*> _allocated_regions;
+  GrowableArray<HeapRegion *> _allocated_regions;
 
   // The number of bytes used in the current range.
   size_t _summary_bytes_used;
 
   // Current allocation window within the current region.
-  HeapWord* _bottom;
-  HeapWord* _top;
-  HeapWord* _max;
+  HeapWord *_bottom;
+  HeapWord *_top;
+  HeapWord *_max;
 
   // Allocate a new region for this archive allocator.
   // Allocation is from the top of the reserved heap downward.
   bool alloc_new_region();
 
 public:
-  G1ArchiveAllocator(G1CollectedHeap* g1h, bool open) :
-    _open(open),
-    _g1h(g1h),
-    _allocation_region(NULL),
-    _allocated_regions((ResourceObj::set_allocation_type((address) &_allocated_regions,
-                                                         ResourceObj::C_HEAP),
-                        2), mtGC),
-    _summary_bytes_used(0),
-    _bottom(NULL),
-    _top(NULL),
-    _max(NULL) { }
+  G1ArchiveAllocator(G1CollectedHeap *g1h, bool open) : _open(open),
+                                                        _g1h(g1h),
+                                                        _allocation_region(NULL),
+                                                        _allocated_regions((ResourceObj::set_allocation_type((address)&_allocated_regions,
+                                                                                                             ResourceObj::C_HEAP),
+                                                                            2),
+                                                                           mtGC),
+                                                        _summary_bytes_used(0),
+                                                        _bottom(NULL),
+                                                        _top(NULL),
+                                                        _max(NULL) {}
 
-  virtual ~G1ArchiveAllocator() {
+  virtual ~G1ArchiveAllocator()
+  {
     assert(_allocation_region == NULL, "_allocation_region not NULL");
   }
 
-  static G1ArchiveAllocator* create_allocator(G1CollectedHeap* g1h, bool open);
+  static G1ArchiveAllocator *create_allocator(G1CollectedHeap *g1h, bool open);
 
   // Allocate memory for an individual object.
-  HeapWord* archive_mem_allocate(size_t word_size);
+  HeapWord *archive_mem_allocate(size_t word_size);
 
   // Return the memory ranges used in the current archive, after
   // aligning to the requested alignment.
-  void complete_archive(GrowableArray<MemRegion>* ranges,
+  void complete_archive(GrowableArray<MemRegion> *ranges,
                         size_t end_alignment_in_bytes);
 
   // The number of bytes allocated by this allocator.
-  size_t used() {
+  size_t used()
+  {
     return _summary_bytes_used;
   }
 
@@ -275,7 +286,8 @@ public:
   // must be done when recalculate_use is used to reset the counter
   // for the generic allocator, since it counts bytes in all G1
   // regions, including those still associated with this allocator.
-  void clear_used() {
+  void clear_used()
+  {
     _summary_bytes_used = 0;
   }
 };

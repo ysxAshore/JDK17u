@@ -4092,7 +4092,6 @@ public:
 #define VTableLenOff 160
 #define NonstaticOopMapSizeOff 296
 #define ITableLenOff 300
-#define REFERENCE_TYPE 315
 #define VTableOff 464
 #define StaticFieldOff 184
 
@@ -4105,12 +4104,12 @@ public:
 #define ObjectArrayKlassID 5
 
 /*------------------- Region Attr ----------------*/
-#define TYPE_OPTIONAL -3
-#define TYPE_HUMONGOUS -2
-#define TYPE_NOTINCSET -1
-#define TYPE_YOUNG 0
-#define TYPE_OLD 1
-#define TYPE_OFFSET 1
+#define ATTR_TYPE_OPTIONAL -3
+#define ATTR_TYPE_HUMONGOUS -2
+#define ATTR_TYPE_NOTINCSET -1
+#define ATTR_TYPE_YOUNG 0
+#define ATTR_TYPE_OLD 1
+#define ATTR_TYPE_OFFSET 1
 
 /*------------------- MarkWord -------------------*/
 #define LOCK_MASK_IN_PLACE 0x3
@@ -4123,17 +4122,56 @@ public:
 #define AGE_MASK_IN_PLACE (AGE_MASK << AGE_SHIFT)
 
 /*------------------ Heap Region -----------------*/
-#define NODE_INDEX_OFFSET 288
-#define YOUND_INDEX_IN_CSET_OFFSET 256
-#define HEAP_REGION_TYPE_OFFSET 188
+#define REGION_END_OFFSET 0x8
+#define REGION_TOP_OFFSET 0x10
+#define REGION_COMPACTION_TOP_OFFSET 0x18
+#define BOT_PART_OFFSET 0x20
+#define PAR_ALLOC_LOCK_OFFSET 0x40
+#define PRE_DUMMY_TOP_OFFSET 0xa8
+#define NEXT_TOP_AT_MARK_START_OFFSET 0xe8
+#define REGION_REM_SET_OFFSET 0xb0
+#define REGION_HRM_INDEX_OFFSET 0xb8
+#define REGION_TYPE_OFFSET 0xbc
+#define REGION_NEXT_OFFSET 0xd0
+#define REGION_PREV_OFFSET 0xd8
+#define NODE_INDEX_OFFSET 0x120
+#define YOUND_INDEX_IN_CSET_OFFSET 0x100
+#define REGION_YOUNG_MASK 0x2
+#define REGION_OLD_MASK 0x10
+#define REGION_TYPE_SURVIVOR 0x3
+#define REGION_TYPE_OLD 0x10
 
-/*-------------- G1ParScanThreadState ------------*/
+/*-------------Block Offset Table Part--------------*/
+#define BOTPART_INDEX_OFFSET 0x8
+#define BOTPART_BOT_OFFSET 0x10
+
+/*--------------- Block Offset Table ---------------*/
+#define BOT_ARRAY_OFFSET 0x10
+
+/*-------------- G1ParScanThreadState --------------*/
 #define QSET_OFFSET 0x18
 #define CARD_TABLE_OFFSET 0x60
 #define OBJCLOSURE_OFFSET 0x180
 #define LAST_ENQUEUED_CARD_OFFSET 0x1b0
 #define PARTIAL_ARRAY_CHUNK_SIZE_OFFSET 0x1ec
 #define PARTIAL_ARRAY_STEPPER_OFFSET 0x1f0
+
+/*---------------- CollectedHeap -------------------*/
+#define G1H_HRM_OFFSET 0x130
+#define G1H_OLDSET_OFFSET 0xa0
+#define G1H_SURVIVOR_OFFSET 0x3f8
+#define G1H_POLICY_OFFSET 0x430
+
+/*------------------ G1Policy ----------------------*/
+#define MAX_SURVIVOR_REGIONS_OFFSET 0x134
+
+/*--------------- G1SurvivorRegions ----------------*/
+#define REGIONS_GROW_ARRAY_OFFSET 0x8
+#define USED_BYTES_OFFSET 0x10
+#define REGIONS_ON_NODE_OFFSET 0x18
+
+/*---------------- HeapRegionManager ---------------*/
+#define FREELIST_OFFSET 0xb0
 
 /*-------------------- ObjClosure -----------------*/
 #define SCANNING_IN_YOUNG_OFFSET 0x20
@@ -4145,13 +4183,85 @@ public:
 /*------------------- RDC Qset --------------------*/
 #define QSET_QUEUE_OFFSET 0x30
 
-/*--------------------- PtrQueue---------------------------*/
-#define INDEX_OFFSET 0x0
-#define BUFFER_OFFSET 0x10
+/*----------------- Plab Allocator ----------------*/
+#define ALLOCATOR_OFFSET 0x8
+#define ALLOC_BUFFERS_OFFSET 0x10
+#define DIRECT_ALLOCATED_OFFSET 0x20
+#define NUM_PLAB_FILLS 0x30
+#define NUM_DIRECT_ALLOCATIONS 0x40
 
+/*------------------ Allocator --------------------*/
+#define SURVIVOR_IS_FULL_OFFSET 0x10
+#define OLD_IS_FULL_OFFSET 0x11
+#define SURVIVOR_GC_ALLOC_REGIONS_OFFSET 0x28
+#define OLD_GC_ALLOC_REGION_OFFSET 0x30
+
+/*------------------- PLAB ------------------------*/
+#define PLAB_WORDSZ_OFFSET 0x20
+#define PLAB_BOTTOM_OFFSET 0x28
+#define PLAB_TOP_OFFSET 0x30
+#define PLAB_END_OFFSET 0x38
+#define PLAB_HARD_END_OFFSET 0x40
+#define PLAB_ALLOCATED_OFFSET 0x48
+#define PLAB_WASTED_OFFSET 0x50
+
+/*------------------ PLAB Stats -------------------*/
+#define DEFAULT_PLAB_SZ_OFFSET 0x28
+#define DESIRED_NET_PLAB_SZ 0x30
+
+/*------------------ G1AllocRegion ----------------*/
+#define ALLOC_REGION_OFFSET 0x8
+#define COUNT_OFFSET 0x10
+#define USED_BYTES_BEFORE_OFFSET 0x18
+#define BOT_UPDATES_OFFSET 0x20
+#define ALLOC_REGION_NODE_OFFSET 0x30
+#define PURPOSE_ATTR_OFFSET 0x40
+
+/*------------------ NUMA ---------------------*/
+#define ACTIVE_NODE_IDS_OFFSET 0x18
+#define REGION_SIZE_OFFSET 0x20
+#define PAGE_SIZE_OFFSET 0x28
+
+/*------------------- FreeList ---------------*/
+#define LIST_LENGTH_OFFSET 0x10
+#define LIST_HEAD_PTR_OFFSET 0x28
+#define LIST_TAIL_PTR_OFFSET 0x30
+#define LIST_LAST_PTR_OFFSET 0x38
+#define LIST_NODE_INFO_PTR_OFFSET 0x40
+
+/*--------------------- PtrQueue---------------------------*/
+#define QUEUE_BUFFER_OFFSET 0x10
+
+#define SURVIVOR_GC_ALLOC_REGION_SIZE 0x48
+#define PARALLEL_GC_BUFFER_WASTE_PCT 0xa
 #define SCANNER_TASK_SIZE 8 // scannertask 属性只有一个void *p
-#define REGION_ATTR_SIZE 2
+#define ATTR_SIZE 2
 #define OBJECT_PTR_SIZE 8
+  uintptr_t buffer_node_allocate(uintptr_t allocator_ptr)
+  {
+    uintptr_t node = 0;
+    uintptr_t free_list_ptr = allocator_ptr + 0x80;
+    {
+      node = *(uintptr_t *)free_list_ptr;
+      uintptr_t new_top = 0;
+      if (node != 0)
+        new_top = *(uintptr_t *)(node + 0x8);
+      //@notice: 这里的cmpxchg(&_top, result, new_top)一定会返回_top == result result 不变
+      *(uintptr_t *)free_list_ptr = new_top;
+      if (node != 0)
+        *(uintptr_t *)(node + 0x8) = 0;
+    }
+    if (node == 0)
+    {
+      node = (uintptr_t)BufferNode::allocate(*(size_t *)(allocator_ptr));
+    }
+    else
+    {
+      *(size_t *)(allocator_ptr + 0x100) -= 1;
+    }
+    return node + 0x10;
+  }
+
   void aop_work_enqueue_card(uintptr_t region_attr_ptr, uintptr_t p, G1ParScanThreadState *pss)
   {
     uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
@@ -4169,24 +4279,37 @@ public:
     {
       uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
       uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
-      size_t index = *(size_t *)(queue_ptr + INDEX_OFFSET) / 8;
-      // @notice: every 256 encouter once index == 0
+      uintptr_t buffer = *(uintptr_t *)(queue_ptr + 0x10);
+      size_t index = *(size_t *)(queue_ptr) / OBJECT_PTR_SIZE;
       if (index == 0)
       {
-        // tty->print_cr("hwgc -> soft : update rdc queue set");
-        // @notice: in this function possibly call mem alloc
-        // @todo: not all needs malloc(2/3)
-        log_info(gc, task)("enqueue failed");
-        pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
-      }
-      else
-      {
-        uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
-        --index;
-        *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
-        *(size_t *)(queue_ptr + INDEX_OFFSET) = index * 8;
-      }
+        uintptr_t old_node = 0;
+        if (buffer != 0)
+        {
+          old_node = buffer - 0x10;
+          *(size_t *)(old_node) = 0;
+        }
 
+        uintptr_t node_allocator_ptr = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
+        buffer = buffer_node_allocate(node_allocator_ptr);
+
+        *(uintptr_t *)(queue_ptr + 0x10) = buffer;
+        index = *(size_t *)(node_allocator_ptr); // index = buffersize
+        *(size_t *)queue_ptr = index * OBJECT_PTR_SIZE;
+
+        if (old_node != 0)
+        {
+          uintptr_t buffer_list_ptr = rdc_local_qset_ptr + 0x18;
+          *(size_t *)(buffer_list_ptr + 0x10) += index;
+          *(uintptr_t *)(old_node + 0x8) = *(uintptr_t *)buffer_list_ptr;
+          *(uintptr_t *)buffer_list_ptr = old_node;
+          if (*(uintptr_t *)(buffer_list_ptr + 0x8) == 0)
+            *(uintptr_t *)(buffer_list_ptr + 0x8) = old_node;
+        }
+      }
+      --index;
+      *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
+      *(size_t *)(queue_ptr) = index * OBJECT_PTR_SIZE;
       *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
     }
   }
@@ -4202,7 +4325,7 @@ public:
     // 15 in mechrevo r78845h 16 in others
     // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
 
-    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * REGION_ATTR_SIZE;
+    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * ATTR_SIZE;
     int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
 
     if (region_attr_type >= 0)
@@ -4236,8 +4359,8 @@ public:
         if (*(bool *)(bool_base + region))
         {
           *(bool *)(bool_base + region) = false;
-          uintptr_t region_attr = pss->getRegionAttrBase() + region * REGION_ATTR_SIZE;
-          *(int8_t *)(region_attr + TYPE_OFFSET) = TYPE_NOTINCSET;
+          uintptr_t region_attr = pss->getRegionAttrBase() + region * ATTR_SIZE;
+          *(int8_t *)(region_attr + ATTR_TYPE_OFFSET) = ATTR_TYPE_NOTINCSET;
         }
       }
 
@@ -4246,6 +4369,657 @@ public:
 
       aop_work_enqueue_card(region_attr_ptr, dest, pss);
     }
+  }
+
+  uintptr_t par_allocate_iml(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_plab_size)
+  {
+    uintptr_t alloc_result;
+    // do
+    //{
+    uintptr_t top = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+    uintptr_t end = *(uintptr_t *)(alloc_region + REGION_END_OFFSET);
+    size_t available = (end - top) / OBJECT_PTR_SIZE;
+    size_t want_to_allocate = available > desired_word_size ? desired_word_size : available;
+    if (want_to_allocate >= min_word_size)
+    {
+      uintptr_t new_top = top + want_to_allocate * OBJECT_PTR_SIZE;
+      uintptr_t result = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+      // @notice: single thread must equal
+      // if (result == top)
+      //{
+      *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET) = new_top;
+      *actual_plab_size = want_to_allocate;
+      return top;
+      //}
+    }
+    else
+      return 0;
+    //} while (true);
+  }
+
+  uintptr_t par_allocate(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, bool bot_updates)
+  {
+    uintptr_t result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+
+    if (result != 0 && bot_updates)
+    {
+      uintptr_t blk_start = result;
+      uintptr_t blk_end = result + (*actual_word_size * OBJECT_PTR_SIZE);
+      uintptr_t bot_part_ptr = alloc_region + BOT_PART_OFFSET;
+      uintptr_t next_offset_threshold = *(uintptr_t *)(bot_part_ptr);
+
+      if (blk_end > next_offset_threshold)
+      {
+        uintptr_t threshold = next_offset_threshold;
+        size_t index = *(uintptr_t *)(bot_part_ptr + BOTPART_INDEX_OFFSET);
+        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + BOTPART_BOT_OFFSET);
+
+        {
+          size_t offset = (threshold - blk_start) / OBJECT_PTR_SIZE;
+          uintptr_t array = *(uintptr_t *)(bot_ptr + BOT_ARRAY_OFFSET);
+          *(uint8_t *)(array + index) = offset;
+        }
+
+        uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
+        // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
+        size_t end_index = (blk_end - OBJECT_PTR_SIZE - reserved_start) >> 9;
+
+        if (index + 1 <= end_index)
+        {
+          // @notice: blockOffsetTable.hpp -> BOTConstants::LogN_words = 6
+          uintptr_t rem_st = reserved_start + ((index + 1) << 6) * OBJECT_PTR_SIZE;
+          // @notice: blockOffsetTable.hpp -> BOTConstants::N_words = 64
+          uintptr_t rem_end = reserved_start + ((end_index << 6) + 64) * OBJECT_PTR_SIZE;
+
+          if (rem_st < rem_end)
+          {
+            size_t start_card = (rem_st - reserved_start) >> 9;
+            size_t end_card = (rem_end - OBJECT_PTR_SIZE - reserved_start) >> 9;
+
+            if (start_card <= end_card)
+            {
+              size_t start_card_for_region = start_card;
+              u_char offset = 0xff; // const jubyte  max_jubyte  = (jubyte)-1;  // 0xFF       largest jubyte
+              // @notice: blockOffsetTable.hpp -> BOTConstants::N_powers = 14
+              for (uint i = 0; i < 14; i++)
+              {
+                // @notice: blockOffsetTable.hpp -> BOTConstants::LogBase = 4
+                size_t reach = start_card - 1 + ((1 << (4 * (i + 1))) - 1);
+                offset = 64 + i;
+                size_t num_cards = (reach >= end_card ? end_card : reach) - start_card_for_region + 1;
+                uintptr_t begin = *(uintptr_t *)(bot_ptr + BOT_ARRAY_OFFSET) + start_card_for_region;
+                while (num_cards--)
+                {
+                  *(u_int8_t *)begin = offset;
+                  begin++;
+                }
+                start_card_for_region = reach + 1;
+                if (reach >= end_card)
+                  break;
+              }
+            }
+          }
+        }
+        index = end_index + 1;
+        threshold = reserved_start + ((end_index << 6) + 64) * OBJECT_PTR_SIZE;
+        *(uintptr_t *)(bot_part_ptr) = threshold;
+        *(uintptr_t *)(bot_part_ptr + BOTPART_INDEX_OFFSET) = index;
+      }
+    }
+    return result;
+  }
+
+  uintptr_t allocate_free_region(uint heap_region_type, uint node_index)
+  {
+    uintptr_t hrm_ptr = (uintptr_t)_g1h + G1H_HRM_OFFSET;
+    uintptr_t free_list_ptr = hrm_ptr + FREELIST_OFFSET;
+    bool from_head = (heap_region_type & 0x2) == 0;
+    uintptr_t numa_ptr = (uintptr_t)G1NUMA::numa();
+    uint active_node_ids = *(uint *)(numa_ptr + ACTIVE_NODE_IDS_OFFSET);
+
+    uintptr_t res = 0;
+    if (node_index != UINT_MAX - 1 && active_node_ids > 1)
+    {
+      uint region_size = *(uint *)(numa_ptr + REGION_SIZE_OFFSET);
+      uint page_size = *(uint *)(numa_ptr + PAGE_SIZE_OFFSET);
+      uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
+
+      uintptr_t cur;
+      size_t cur_depth = 0;
+      if (from_head)
+        cur = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
+      else
+        cur = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
+
+      while (cur != 0 && cur_depth < max_search_depth)
+      {
+        if (node_index == *(uint *)(cur + NODE_INDEX_OFFSET))
+          break;
+        ++cur_depth;
+        if (from_head)
+          cur = *(uintptr_t *)(cur + REGION_NEXT_OFFSET);
+        else
+          cur = *(uintptr_t *)(cur + REGION_PREV_OFFSET);
+      }
+
+      if (cur == 0 || cur_depth >= max_search_depth)
+        res = 0;
+      else
+      {
+        res = cur;
+        uintptr_t prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
+        uintptr_t next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
+        if (prev == 0)
+          *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = next;
+        else
+          *(uintptr_t *)(prev + REGION_NEXT_OFFSET) = next;
+
+        if (next == 0)
+          *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = prev;
+        else
+          *(uintptr_t *)(next + REGION_PREV_OFFSET) = prev;
+
+        *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
+        *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
+      }
+    }
+
+    if (res == 0)
+    {
+      uint length = *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET);
+      if (length == 0)
+        res = 0;
+      else
+      {
+        if (from_head)
+        {
+          res = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
+          uintptr_t res_next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
+          *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = res_next;
+          if (res_next == 0)
+            *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = 0;
+          else
+            *(uintptr_t *)(res_next + REGION_PREV_OFFSET) = 0;
+          *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
+        }
+        else
+        {
+          res = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
+          uintptr_t res_prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
+          *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = res_prev;
+          if (res_prev == 0)
+            *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = 0;
+          else
+            *(uintptr_t *)(res_prev + REGION_NEXT_OFFSET) = 0;
+          *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
+        }
+      }
+    }
+
+    if (res != 0)
+    {
+      if (*(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) == res)
+        *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) = 0;
+
+      *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET) -= 1;
+
+      uintptr_t node_info_ptr = *(uintptr_t *)(free_list_ptr + LIST_NODE_INFO_PTR_OFFSET);
+      if (node_info_ptr != 0)
+      {
+        uint node_index = *(uint *)(res + NODE_INDEX_OFFSET);
+        if (node_index < *(uint *)(node_info_ptr + 0x10))
+        {
+          uintptr_t length_of_node_ptr = *(uintptr_t *)(node_info_ptr + 0x8);
+          *(uint *)(length_of_node_ptr + node_index * 4) -= 1;
+        }
+      }
+    }
+
+    return res;
+  }
+
+  uintptr_t new_region(size_t word_size, uint heap_region_type, uint node_index)
+  {
+    // uintptr_t res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
+    uintptr_t res = allocate_free_region(heap_region_type, node_index);
+
+    bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
+    if (res == 0 && expand_failure)
+    {
+      log_info(gc, task)("expand_single_region");
+      if (_g1h->expand_single_region(node_index))
+        // res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
+        res = allocate_free_region(heap_region_type, node_index);
+      else
+        *(bool *)((uintptr_t)_g1h + 0x370) = false;
+    }
+
+    return res;
+  }
+
+  uintptr_t new_gc_alloc_region_debug(size_t word_sz, uint heap_region_type, uint node_index)
+  {
+    uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
+    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
+    uintptr_t new_alloc_region = new_region(word_sz, heap_region_type, node_index);
+
+    if (new_alloc_region != 0)
+    {
+      if (heap_region_type == REGION_TYPE_SURVIVOR)
+      {
+        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
+        int len = *(int *)(grow_array_ptr);
+        int max = *(int *)(grow_array_ptr + 0x4);
+        if (len == max)
+        {
+          log_info(gc, task)("len max %x %x", len, max);
+          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+        }
+        int idx = len;
+        ++len;
+        *(int *)(grow_array_ptr) = len;
+        uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
+        *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
+
+        uintptr_t regions_on_node_ptr = survivor_ptr + REGIONS_ON_NODE_OFFSET;
+        uintptr_t count_per_node = *(uintptr_t *)(regions_on_node_ptr);
+        uintptr_t numa = *(uintptr_t *)(regions_on_node_ptr + 0x8);
+        uint num_active_node_ids = *(uint *)(numa + ACTIVE_NODE_IDS_OFFSET);
+        uint new_node_index = *(uint *)(new_alloc_region + NODE_INDEX_OFFSET);
+        if (new_node_index < num_active_node_ids)
+          *(uint *)(count_per_node + new_node_index * 4) += 1;
+      }
+      else
+        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
+
+      uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
+      uint new_type = *(uint *)(new_alloc_region + REGION_TYPE_OFFSET);
+      assert(new_type == heap_region_type, "error");
+      uintptr_t state_ptr = remset_ptr + 0xf0;
+      if ((new_type & REGION_YOUNG_MASK) != 0)
+        *(uint *)state_ptr = 2;
+      else if ((new_type & REGION_OLD_MASK) != 0)
+        *(uint *)state_ptr = 0;
+
+      uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
+      bool needs_remset_update = (new_type & REGION_OLD_MASK) == 0;
+      uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
+      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+      *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
+      return new_alloc_region;
+    }
+    return 0;
+  }
+  uintptr_t new_gc_alloc_region(uintptr_t region_ptr, size_t word_sz)
+  {
+    int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
+    uint node_index = *(uint *)(region_ptr + ALLOC_REGION_NODE_OFFSET);
+    uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
+    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
+    uintptr_t policy_ptr = *(uintptr_t *)((uintptr_t)_g1h + G1H_POLICY_OFFSET);
+
+    bool has_more_regions;
+    uint heap_region_type;
+    if (type == ATTR_TYPE_OLD)
+    {
+      heap_region_type = REGION_TYPE_OLD;
+      has_more_regions = true;
+    }
+    else
+    {
+      heap_region_type = REGION_TYPE_SURVIVOR;
+      uint len = *(uint *)(grow_array_ptr);
+      uint max_survivor_regions = *(uint *)(policy_ptr + MAX_SURVIVOR_REGIONS_OFFSET);
+      has_more_regions = len < max_survivor_regions;
+    }
+
+    uintptr_t new_alloc_region = new_region(word_sz, heap_region_type, node_index);
+
+    if (new_alloc_region != 0)
+    {
+      if (heap_region_type == REGION_TYPE_SURVIVOR)
+      {
+        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
+        int len = *(int *)(grow_array_ptr);
+        int max = *(int *)(grow_array_ptr + 0x4);
+        if (len == max)
+        {
+          log_info(gc, task)("len max %x %x", len, max);
+          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+        }
+        int idx = len;
+        ++len;
+        *(int *)(grow_array_ptr) = len;
+        uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
+        *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
+
+        uintptr_t regions_on_node_ptr = survivor_ptr + REGIONS_ON_NODE_OFFSET;
+        uintptr_t count_per_node = *(uintptr_t *)(regions_on_node_ptr);
+        uintptr_t numa = *(uintptr_t *)(regions_on_node_ptr + 0x8);
+        uint num_active_node_ids = *(uint *)(numa + ACTIVE_NODE_IDS_OFFSET);
+        uint new_node_index = *(uint *)(new_alloc_region + NODE_INDEX_OFFSET);
+        if (new_node_index < num_active_node_ids)
+          *(uint *)(count_per_node + new_node_index * 4) += 1;
+      }
+      else
+        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
+
+      uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
+      uint new_type = *(uint *)(new_alloc_region + REGION_TYPE_OFFSET);
+      assert(new_type == heap_region_type, "error");
+      uintptr_t state_ptr = remset_ptr + 0xf0;
+      if ((new_type & REGION_YOUNG_MASK) != 0)
+        *(uint *)state_ptr = 2;
+      else if ((new_type & REGION_OLD_MASK) != 0)
+        *(uint *)state_ptr = 0;
+
+      uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
+      bool needs_remset_update = (new_type & REGION_OLD_MASK) == 0;
+      uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
+      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+      *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
+      return new_alloc_region;
+    }
+    return 0;
+  }
+
+  uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t alloc_region, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size)
+  {
+    if (alloc_region != dummy_region)
+    {
+      // fill up can set false
+      uintptr_t bottom = *(uintptr_t *)(alloc_region);
+      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
+      size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
+
+      *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
+
+      int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
+      if (type == 1)
+      {
+        uintptr_t old_set = (uintptr_t)_g1h + G1H_OLDSET_OFFSET;
+        *(uint *)(old_set + 0x10) += 1;
+      }
+      else
+      {
+        uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
+        *(size_t *)(survivor_ptr + USED_BYTES_OFFSET) += allocated_bytes;
+      }
+
+      bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
+
+      // if (during_im && allocated_bytes > 0)
+      //{
+      //   uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
+      //   uintptr_t start = *(uintptr_t *)(alloc_region + NEXT_TOP_AT_MARK_START_OFFSET);
+      //   uintptr_t end = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+      //   uintptr_t root_regions_ptr = cm + 0xb0;
+      //   uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
+      //   uintptr_t idx = *(uintptr_t *)(root_regions_ptr + 0x10);
+      //   uintptr_t mem_region = root_regions_array + idx * 0x10;
+      //   *(uintptr_t *)(mem_region) = start;
+      //   *(uintptr_t *)(mem_region + 0x8) = (end - start) / OBJECT_PTR_SIZE;
+      //   *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
+      // }
+
+      *(uintptr_t *)(region_ptr + USED_BYTES_BEFORE_OFFSET) = 0;
+      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = dummy_region;
+    }
+    // uintptr_t new_alloc_region = (uintptr_t)(((G1AllocRegion *)region_ptr)->allocate_new_region(desired_word_size, false));
+    // G1HeapRegionAttr::region_type_t type = *(int8_t *)(region_ptr + 0x40);
+    // uintptr_t new_alloc_region = (uintptr_t)_g1h->new_gc_alloc_region(desired_word_size, type, *(uint *)(region_ptr + 0x30));
+    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
+
+    if (new_alloc_region != 0)
+    {
+      *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
+      uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
+      uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
+      *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
+
+      bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
+      size_t temp;
+      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
+
+      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = new_alloc_region;
+      *(uint *)(region_ptr + COUNT_OFFSET) += 1;
+
+      if (result != 0)
+        *actual_word_size = desired_word_size;
+      return result;
+    }
+    else
+      return 0;
+  }
+
+  uintptr_t attempt_allocation_using_new_region_debug(uintptr_t region_ptr, size_t desired_word_size, size_t *actual_word_size)
+  {
+    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
+
+    if (new_alloc_region != 0)
+    {
+      *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
+      uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
+      uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
+      *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
+
+      bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
+      size_t temp;
+      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
+
+      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = new_alloc_region;
+      *(uint *)(region_ptr + COUNT_OFFSET) += 1;
+
+      if (result != 0)
+        *actual_word_size = desired_word_size;
+      return result;
+    }
+    else
+      return 0;
+  }
+
+  uintptr_t par_allocate_during_gc_debug(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint node_index, uintptr_t allocator_ptr, G1ParScanThreadState *pss)
+  {
+    uintptr_t result = 0;
+    uintptr_t region_ptr = 0;
+    if (dest_attr_type == 0)
+    {
+      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+      region_ptr = survivor_gc_alloc_ptr + node_index * 0x48;
+    }
+    else if (dest_attr_type == 1)
+    {
+      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
+      region_ptr = old_gc_alloc_region_ptr;
+    }
+
+    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
+
+    result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+    return result;
+  }
+  uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint node_index, uintptr_t allocator_ptr, G1ParScanThreadState *pss)
+  {
+    uintptr_t result = 0;
+    uintptr_t region_ptr = 0;
+    if (dest_attr_type == 0)
+    {
+      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+      region_ptr = survivor_gc_alloc_ptr + node_index * 0x48;
+    }
+    else if (dest_attr_type == 1)
+    {
+      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
+      region_ptr = old_gc_alloc_region_ptr;
+    }
+
+    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
+
+    if (dest_attr_type == 0)
+      result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+    else if (dest_attr_type == 1)
+      result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
+
+    if (result == 0)
+    {
+      uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+      bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+      if (!is_full)
+      {
+        // log_info(gc, task)("survivor mutex locker");
+        uintptr_t thread = (uintptr_t)Thread::current();
+        uintptr_t lock_ptr = (uintptr_t)FreeList_lock;
+        *(uintptr_t *)lock_ptr = thread;
+        // FreeList_lock->set_owner(Thread::current());
+        // MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
+
+        if (dest_attr_type == 0)
+          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+        else if (dest_attr_type == 1)
+          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
+
+        if (result == 0)
+          result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+
+        if (result == 0)
+        {
+          if (dest_attr_type == 0)
+            *(bool *)(allocator_ptr + 0x10) = true;
+          else if (dest_attr_type == 1)
+            *(bool *)(allocator_ptr + 0x11) = true;
+        }
+        // FreeList_lock->set_owner(NULL);
+        *(uintptr_t *)lock_ptr = 0;
+      }
+    }
+
+    if (result != 0 && dest_attr_type == 0)
+    {
+      uintptr_t end = result + *actual_word_size * OBJECT_PTR_SIZE;
+      uintptr_t card_table_ptr = *(uintptr_t *)((uintptr_t)_g1h + 0x78);
+      uintptr_t _byte_map_base = *(uintptr_t *)(card_table_ptr + BYTE_MAP_BASE_OFFSET);
+      // card_shift = 9
+      uintptr_t first = _byte_map_base + (result >> 9);
+      uintptr_t last = _byte_map_base + ((end - OBJECT_PTR_SIZE) >> 9);
+      // g1_young_gen = 4
+      while (first < last)
+      {
+        *(uint8_t *)(first) = 4;
+        ++first;
+      }
+    }
+
+    // young attemp bot updates all zero
+    // if (!bot_updates)
+    //  result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
+    // else
+    //  result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+    return result;
+  }
+
+  uintptr_t allocate_direct_or_new_plab(uintptr_t dest_attr_ptr, int8_t dest_attr_type, size_t word_sz, bool *plab_refill_failed, uint node_index, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss)
+  {
+
+    uintptr_t plab_stats_ptr = 0;
+    if (dest_attr_type == 0)
+      plab_stats_ptr = (uintptr_t)_g1h + 0x250;
+    else if (dest_attr_type == 1)
+      plab_stats_ptr = (uintptr_t)_g1h + 0x2d0;
+
+    // @notice: single thread
+    uint no_of_gc_workers = 1;
+
+    size_t gclab_word_size;
+    size_t min_size = 0x102;
+    size_t max_size = 0x40000;
+    // ResizePLAB = 1
+    size_t temp = *(size_t *)(plab_stats_ptr + 0x30) / no_of_gc_workers;
+    gclab_word_size = MIN2(MAX2(temp, min_size), max_size);
+
+    // AlignmentReserve=0x2 humongous_object_threshold_in_words=0x40000
+    size_t plab_word_size = MIN2(max_size, gclab_word_size);
+    size_t required_in_plab = word_sz + 0x2;
+
+    uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
+    bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
+    // if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
+    //{
+    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+    uintptr_t buffer;
+    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+    // uintptr_t obj_ptr = (uintptr_t)(((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab_debug(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, plab_refill_failed, node_index, plab_word_size, required_in_plab, (PLAB *)buffer));
+
+    size_t result = 0;
+    uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
+    uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+    if (top_ptr < hard_end_ptr)
+    {
+      {
+        uintptr_t start = top_ptr;
+        size_t words = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
+        uintptr_t klass_ptr = 0;
+        if (words >= 3)
+        {
+          size_t payload_size = words - 3;
+          size_t len = payload_size * OBJECT_PTR_SIZE / 4;
+          *(int *)(start + ArrayLenOff) = len;
+
+          klass_ptr = (uintptr_t)Universe::intArrayKlassObj();
+        }
+        else if (words > 0)
+          klass_ptr = (uintptr_t)vmClasses::Object_klass();
+        *(uintptr_t *)(start + MarkWordOff) = (0x0 | 0x1);
+        *(uintptr_t *)(start + KlassOff) = klass_ptr;
+      }
+
+      *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
+      size_t remaining = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
+      *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
+      *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
+      result = remaining;
+    }
+    *(uintptr_t *)(buffer + 0x50) += result;
+
+    //__num_plab_fills[dest.type()]++
+    uintptr_t num_plab_fills = plab_allocator_ptr + 0x30;
+    *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE) += 1;
+
+    size_t actual_plab_size = 0;
+    // obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
+    uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr, pss);
+
+    if (obj_ptr != 0)
+    {
+      *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
+      *(uintptr_t *)(buffer + 0x28) = obj_ptr;
+      *(uintptr_t *)(buffer + 0x30) = obj_ptr;
+      *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
+      *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
+      *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
+
+      uintptr_t obj = obj_ptr;
+      size_t delta = actual_plab_size - 2;
+      if (delta >= word_sz)
+        *(uintptr_t *)(buffer + 0x30) = obj + word_sz * OBJECT_PTR_SIZE;
+      else
+        obj = 0;
+      return obj;
+    }
+    *plab_refill_failed = true;
+    //}
+
+    temp = 0;
+    // uintptr_t result = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, word_sz, &temp, node_index);
+    uintptr_t obj = par_allocate_during_gc(dest_attr_type, word_sz, word_sz, &temp, node_index, allocator_ptr, pss);
+    tty->print_cr("needs recall, and the result is %lx", obj);
+    if (obj != 0)
+    {
+      // uintptr_t direct_allocated = plab_allocator_ptr + 0x20;
+      //*(uintptr_t *)(direct_allocated + dest_attr_type * OBJECT_PTR_SIZE) += word_sz;
+      // uintptr_t num_direct_allocations = plab_allocator_ptr + 0x40;
+      //*(uintptr_t *)(num_direct_allocations + dest_attr_type * OBJECT_PTR_SIZE) += 1;
+    }
+    return obj;
   }
 
   uintptr_t do_copy_to_survivor_space(uintptr_t region_attr_ptr, uintptr_t old, uintptr_t old_mark, G1ParScanThreadState *pss)
@@ -4269,17 +5043,17 @@ public:
       size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
     }
 
-    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
+    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + ATTR_TYPE_OFFSET);
 
     uintptr_t dest_attr_ptr;
     uint age = 0;
 
     // 默认目标：根据 region_attr_type 计算
     uintptr_t dest_ptr = (uintptr_t)pss + 0x178;
-    dest_attr_ptr = dest_ptr + region_attr_type * REGION_ATTR_SIZE;
+    dest_attr_ptr = dest_ptr + region_attr_type * ATTR_SIZE;
 
     // 计算age
-    if (region_attr_type == TYPE_YOUNG)
+    if (region_attr_type == ATTR_TYPE_YOUNG)
     {
       // m.has_displaced_mark_helper
       if ((old_mark & UNLOCKED_VALUE) == 0x0)
@@ -4307,7 +5081,7 @@ public:
     uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
     uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
 
-    int8_t dest_attr_type = *(int8_t *)(dest_attr_ptr + TYPE_OFFSET);
+    int8_t dest_attr_type = *(int8_t *)(dest_attr_ptr + ATTR_TYPE_OFFSET);
     uintptr_t buffer;
     // if (dest_attr_type == TYPE_YOUNG)
     //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][node_index];
@@ -4330,8 +5104,44 @@ public:
 
     if (obj_ptr == 0)
     {
-      log_info(gc, task)("do allocate_copy_slow");
-      obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
+      log_info(gc, task)("do allocate copy slow");
+      // obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
+      bool is_old = dest_attr_type == ATTR_TYPE_OLD;
+      bool old_gen_is_full = *(bool *)((uintptr_t)pss + 0x1e8);
+      if (!(is_old && old_gen_is_full))
+      {
+        bool plab_refill_failed = false;
+        // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(*(G1HeapRegionAttr *)dest_attr_ptr, size, &plab_refill_failed, node_index);
+        obj_ptr = allocate_direct_or_new_plab(dest_attr_ptr, dest_attr_type, size, &plab_refill_failed, node_index, plab_allocator_ptr, pss);
+        if (obj_ptr == 0)
+        {
+          if (dest_attr_type == 0)
+          {
+            bool plab_refill_in_old_failed = false;
+
+            // plab_allocate
+            buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE));
+            uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+            uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+            if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
+            {
+              obj_ptr = region_top;
+              *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
+            }
+            else
+            {
+              G1HeapRegionAttr temp;
+              temp.set_old();
+              // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, node_index);
+              obj_ptr = allocate_direct_or_new_plab((uintptr_t)&temp, 1, size, &plab_refill_in_old_failed, node_index, plab_allocator_ptr, pss);
+            }
+
+            // 这里会对后面的dest_attr有影响
+            *(int8_t *)(dest_attr_ptr + 1) = 1;
+            dest_attr_type = 1;
+          }
+        }
+      }
     }
 
     uintptr_t forward_ptr = 0;
@@ -4358,7 +5168,8 @@ public:
 
     //// upadte age
     uint64_t new_mark = old_mark;
-    if (dest_attr_type == TYPE_YOUNG)
+    // 这里的dest attr type可能已经被修改了
+    if (dest_attr_type == ATTR_TYPE_YOUNG)
     {
       if ((old_mark & UNLOCKED_VALUE) == 0x0)
       {
@@ -4380,7 +5191,7 @@ public:
     for (size_t i = 1; i < size; ++i)
       *(uintptr_t *)(obj_ptr + i * OBJECT_PTR_SIZE) = *(uintptr_t *)(old + i * OBJECT_PTR_SIZE);
 
-    uintptr_t scanning_in_young = dest_attr_type == TYPE_YOUNG;
+    uintptr_t scanning_in_young = dest_attr_type == ATTR_TYPE_YOUNG;
     // obj_array trace
     if (lh < 0)
     {
@@ -4492,7 +5303,7 @@ public:
     uint regionAttrShiftBy = pss->getRegionAttrShiftBy();
 
     // 1. get region_attr_ptr
-    uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * REGION_ATTR_SIZE;
+    uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
     // int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
 
     // if (region_attr_type < TYPE_YOUNG) // not in cset
@@ -4518,7 +5329,7 @@ public:
     bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
     if (!typeIsYoung)
     {
-      region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * REGION_ATTR_SIZE;
+      region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
       aop_work_enqueue_card(region_attr_ptr, task, pss);
     }
   }
@@ -4616,8 +5427,8 @@ public:
     for (uint i = 0; i < pss->getRegionAttrLength(); ++i)
     {
       log_info(gc, task)("%d region attr array content:", i);
-      uintptr_t region_attr_ptr = base + i * REGION_ATTR_SIZE;
-      for (int j = 0; j < REGION_ATTR_SIZE; ++j)
+      uintptr_t region_attr_ptr = base + i * ATTR_SIZE;
+      for (int j = 0; j < ATTR_SIZE; ++j)
         log_info(gc, task)("offset-%d(%x): %x", j, j, *(char *)(region_attr_ptr + j));
     }
     //@todo: plab_allocator plab_buffer
@@ -4635,7 +5446,7 @@ public:
     log_info(gc, task)("PtrQueue buffer:");
     uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
     uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
-    uintptr_t buffer = *(uintptr_t *)(queue_ptr + BUFFER_OFFSET);
+    uintptr_t buffer = *(uintptr_t *)(queue_ptr + 0x10);
     size_t index = *(uintptr_t *)(queue_ptr);
     size_t capacity = *(uintptr_t *)(queue_ptr + 0x8);
     log_info(gc, task)("ptrqueue buffer is %lx", buffer);
@@ -4895,7 +5706,7 @@ public:
       scan_roots(pss, worker_id);
 
       // @notice: print other objects
-      printOthers(pss);
+      // printOthers(pss);
 
       // @notice: 可以插在这里进行HWGC工作 也就是evacuate_live_objects的功能卸载到硬件去做
       // 取任务需要的参数
@@ -4950,6 +5761,13 @@ public:
         uint64_t taskQueueElemsBase;
         uint64_t humogousReclaimCandidateBoolBase;
         uint64_t cardTablePtr;
+        uint64_t g1h;
+        uint64_t intArrayKlass;
+        uint64_t objectKlass;
+        uint64_t lockPtr;
+        uint64_t thread;
+        uint64_t dummyRegion;
+        uint64_t numaPtr;
       };
       enum hwgc_state
       {
@@ -4958,12 +5776,14 @@ public:
         HWGC_WAIT_MALLOC,
         HWGC_WAIT_ENQUEUED,
         HWGC_WAIT_PAGEFAULT,
+        HWGC_DEBUG,
         HWGC_DONE
       };
 #define HWGC_IOC_MAGIC 'H'
 #define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct HWGCParameter)
 #define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
 #define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
+#define HWGC_IOC_DEBUG_WRITE _IOW(HWGC_IOC_MAGIC, 3, uint64_t)
       struct HWGCParameter par = {0};
       int state;
       par.chunkSize = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
@@ -4983,8 +5803,15 @@ public:
       par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
       par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
       par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+      par.g1h = (uintptr_t)_g1h;
+      par.intArrayKlass = (uintptr_t)Universe::intArrayKlassObj();
+      par.objectKlass = (uintptr_t)vmClasses::Object_klass();
+      par.lockPtr = (uintptr_t)FreeList_lock;
+      par.thread = (uintptr_t)Thread::current();
+      par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
+      par.numaPtr = (uintptr_t)G1NUMA::numa();
       Ticks start = Ticks::now();
-      tty->print_cr("work begin bottom %x", localBot);
+      tty->print_cr("work start");
       ioctl(fd, HWGC_IOC_START, &par);
       while (1)
       {
@@ -4993,36 +5820,37 @@ public:
         {
           Ticks end = Ticks::now();
           jlong nanos = (end - start).nanoseconds();
-          tty->print_cr("work done, time is %ld", nanos);
+          tty->print_cr("work done, time is %ld ns", nanos);
           break;
         }
         if (state == HWGC_WAIT_ENQUEUED)
         {
-          lseek(fd, 0x90, SEEK_SET);
-          uint64_t res;
-          read(fd, &res, sizeof(res));
-          pss->getRdcQueueSetPtr()->enqueue_failed((void *)res);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
+          lseek(fd, 0xd0, SEEK_SET);
+          uint64_t allocator_ptr, buffer = 0;
+          read(fd, &allocator_ptr, sizeof(allocator_ptr));
+          buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
         }
         if (state == HWGC_WAIT_MALLOC)
         {
-          lseek(fd, 0x90, SEEK_SET);
-          uintptr_t dest_attr_ptr, old, size, age;
-          read(fd, &dest_attr_ptr, sizeof(dest_attr_ptr));
-          read(fd, &old, sizeof(old));
-          read(fd, &size, sizeof(size));
-          read(fd, &age, sizeof(age));
-          uintptr_t obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, 0);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          lseek(fd, 0xd0, SEEK_SET);
+
+          uintptr_t grow_array_ptr, len;
+          read(fd, &grow_array_ptr, 8);
+          read(fd, &len, 8);
+          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
         }
         if (state == HWGC_WAIT_PAGEFAULT)
         {
-          lseek(fd, 0x90, SEEK_SET);
+          lseek(fd, 0xd0, SEEK_SET);
           uintptr_t vaddr, data, write, size;
           read(fd, &vaddr, sizeof(vaddr));
           read(fd, &data, sizeof(data));
           read(fd, &write, sizeof(write));
           read(fd, &size, sizeof(size));
+
+          tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
 
           uint64_t return_value = 0;
           if (write)
@@ -5030,6 +5858,41 @@ public:
           else
             memcpy(&return_value, (void *)vaddr, size);
           ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+        }
+        if (state == HWGC_DEBUG)
+        {
+          lseek(fd, 0xd0, SEEK_SET);
+
+          uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+          read(fd, &dest_attr_type, 8);
+          read(fd, &min_word_size, 8);
+          read(fd, &desired_word_size, 8);
+          read(fd, &allocator_ptr, 8);
+          uintptr_t temp;
+          uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+          ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+          // uintptr_t region_ptr, desired_word_size;
+          // read(fd, &region_ptr, 8);
+          // read(fd, &desired_word_size, 8);
+
+          // tty->print_cr("%lx %lx", region_ptr, desired_word_size);
+
+          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+
+          // uintptr_t desired_word_size, heap_region_type, node_index;
+          // read(fd, &desired_word_size, 8);
+          // read(fd, &heap_region_type, 8);
+          // read(fd, &node_index, 8);
+          // size_t temp;
+          // uintptr_t obj_ptr = new_gc_alloc_region_debug(desired_word_size, (uint)heap_region_type, (uint)node_index);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+
+          // uintptr_t node_index;
+          // read(fd, &node_index, 8);
+          // uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
         }
       }
       close(fd);
@@ -5055,11 +5918,10 @@ public:
       //  if (tag)
       //    dispatch_task(task, pss);
       //} while (tag);
+      // evacuate_live_objects(pss, worker_id);
       // Ticks end = Ticks::now();
       // jlong nanos = (end - start).nanoseconds();
-      // tty->print_cr("work done, time is %ld", nanos);
-
-      // evacuate_live_objects(pss, worker_id);
+      // tty->print_cr("soft work done, time is %ld ns", nanos);
     }
 
     end_work(worker_id);

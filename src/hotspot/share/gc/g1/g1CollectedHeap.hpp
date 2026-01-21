@@ -286,6 +286,9 @@ public:
   uintptr_t getRegionAttrBias() { return _region_attr.bias(); }
   uintptr_t getRegionAttrLength() { return _region_attr.length(); }
 
+  uintptr_t getOffset1() { return (uintptr_t)&_survivor_evac_stats; }
+  uintptr_t getOffset2() { return (uintptr_t)&_old_evac_stats; }
+
   // @insert getHumongousReclaimBase()
   uintptr_t getHumongousReclaimCandidatesBoolBase() { return (uintptr_t)_humongous_reclaim_candidates.base(); }
   size_t getHumongousReclaimCandidatesBoolLength() { return _humongous_reclaim_candidates.length(); }
