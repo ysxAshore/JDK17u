@@ -5837,7 +5837,7 @@ public:
 
           uintptr_t grow_array_ptr, len;
           read(fd, &grow_array_ptr, 8);
-          read(fd, &len, 8);
+          read(fd, &len, 4);
           ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
           ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
         }
@@ -5863,23 +5863,23 @@ public:
         {
           lseek(fd, 0xd0, SEEK_SET);
 
-          uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
-          read(fd, &dest_attr_type, 8);
-          read(fd, &min_word_size, 8);
-          read(fd, &desired_word_size, 8);
-          read(fd, &allocator_ptr, 8);
-          uintptr_t temp;
-          uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
-          ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-          // uintptr_t region_ptr, desired_word_size;
-          // read(fd, &region_ptr, 8);
+          // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+          // read(fd, &dest_attr_type, 8);
+          // read(fd, &min_word_size, 8);
           // read(fd, &desired_word_size, 8);
-
-          // tty->print_cr("%lx %lx", region_ptr, desired_word_size);
-
-          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          // read(fd, &allocator_ptr, 8);
+          // uintptr_t temp;
+          // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+          uintptr_t region_ptr, desired_word_size;
+          read(fd, &region_ptr, 8);
+          read(fd, &desired_word_size, 8);
+          uintptr_t temp;
+          // uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
           // uintptr_t desired_word_size, heap_region_type, node_index;
           // read(fd, &desired_word_size, 8);
