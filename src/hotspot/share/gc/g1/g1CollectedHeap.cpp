@@ -5849,8 +5849,8 @@ public:
           read(fd, &data, sizeof(data));
           read(fd, &write, sizeof(write));
           read(fd, &size, sizeof(size));
-
-          tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+          if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+            tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
 
           uint64_t return_value = 0;
           if (write)
@@ -5872,27 +5872,27 @@ public:
           // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
           // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
           // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-          uintptr_t region_ptr, desired_word_size;
-          read(fd, &region_ptr, 8);
-          read(fd, &desired_word_size, 8);
-          uintptr_t temp;
-          // uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
-          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          // uintptr_t region_ptr, desired_word_size;
+          // read(fd, &region_ptr, 8);
+          // read(fd, &desired_word_size, 8);
+          // uintptr_t temp;
+          //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+          //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
           // uintptr_t desired_word_size, heap_region_type, node_index;
           // read(fd, &desired_word_size, 8);
           // read(fd, &heap_region_type, 8);
           // read(fd, &node_index, 8);
           // size_t temp;
-          // uintptr_t obj_ptr = new_gc_alloc_region_debug(desired_word_size, (uint)heap_region_type, (uint)node_index);
+          // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
           // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-          // uintptr_t node_index;
-          // read(fd, &node_index, 8);
-          // uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          uintptr_t node_index;
+          read(fd, &node_index, 8);
+          uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
         }
       }
       close(fd);
