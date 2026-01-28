@@ -4079,8 +4079,8 @@ public:
 #define KlassOff 8
 #define ElementOff 16
 
-#define ArrayLenOff 16
-#define ArrayElementOff 24
+#define ArrayLenOff (UseCompressedClassPointers ? 12 : 16)
+#define ArrayElementOff (UseCompressedClassPointers ? 16 : 24)
 
 #define REFERENT_OFFSET 16
 #define DISCOVERED_OFFSET 40
@@ -4255,10 +4255,6 @@ public:
     {
       node = (uintptr_t)BufferNode::allocate(*(size_t *)(allocator_ptr));
     }
-    else
-    {
-      *(size_t *)(allocator_ptr + 0x100) -= 1;
-    }
     return node + 0x10;
   }
 
@@ -4316,11 +4312,19 @@ public:
 
   void do_oop_work(uintptr_t src, uintptr_t dest, uint scanning_in_young, G1ParScanThreadState *pss)
   {
-    uintptr_t heap_oop = *(uintptr_t *)(src);
+    uintptr_t heap_oop, obj;
+
+    if (UseCompressedOops)
+      heap_oop = *(uint32_t *)src;
+    else
+      heap_oop = *(uintptr_t *)(src);
     if (heap_oop == 0)
       return;
 
-    uintptr_t obj = heap_oop;
+    if (UseCompressedOops)
+      obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)heap_oop << CompressedOops::shift());
+    else
+      obj = heap_oop;
 
     // 15 in mechrevo r78845h 16 in others
     // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
@@ -4340,7 +4344,7 @@ public:
       assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
 
       uintptr_t base = pss->getTaskQueueElemsBase();
-      *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = dest;
+      *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = dest + (UseCompressedOops ? 1 : 0);
       localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
       *(uint *)bottom_addr = localBot;
     }
@@ -4562,17 +4566,6 @@ public:
         *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) = 0;
 
       *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET) -= 1;
-
-      uintptr_t node_info_ptr = *(uintptr_t *)(free_list_ptr + LIST_NODE_INFO_PTR_OFFSET);
-      if (node_info_ptr != 0)
-      {
-        uint node_index = *(uint *)(res + NODE_INDEX_OFFSET);
-        if (node_index < *(uint *)(node_info_ptr + 0x10))
-        {
-          uintptr_t length_of_node_ptr = *(uintptr_t *)(node_info_ptr + 0x8);
-          *(uint *)(length_of_node_ptr + node_index * 4) -= 1;
-        }
-      }
     }
 
     return res;
@@ -4597,59 +4590,6 @@ public:
     return res;
   }
 
-  uintptr_t new_gc_alloc_region_debug(size_t word_sz, uint heap_region_type, uint node_index)
-  {
-    uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
-    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
-    uintptr_t new_alloc_region = new_region(word_sz, heap_region_type, node_index);
-
-    if (new_alloc_region != 0)
-    {
-      if (heap_region_type == REGION_TYPE_SURVIVOR)
-      {
-        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
-        int len = *(int *)(grow_array_ptr);
-        int max = *(int *)(grow_array_ptr + 0x4);
-        if (len == max)
-        {
-          log_info(gc, task)("len max %x %x", len, max);
-          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-        }
-        int idx = len;
-        ++len;
-        *(int *)(grow_array_ptr) = len;
-        uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
-        *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
-
-        uintptr_t regions_on_node_ptr = survivor_ptr + REGIONS_ON_NODE_OFFSET;
-        uintptr_t count_per_node = *(uintptr_t *)(regions_on_node_ptr);
-        uintptr_t numa = *(uintptr_t *)(regions_on_node_ptr + 0x8);
-        uint num_active_node_ids = *(uint *)(numa + ACTIVE_NODE_IDS_OFFSET);
-        uint new_node_index = *(uint *)(new_alloc_region + NODE_INDEX_OFFSET);
-        if (new_node_index < num_active_node_ids)
-          *(uint *)(count_per_node + new_node_index * 4) += 1;
-      }
-      else
-        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
-
-      uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
-      uint new_type = *(uint *)(new_alloc_region + REGION_TYPE_OFFSET);
-      assert(new_type == heap_region_type, "error");
-      uintptr_t state_ptr = remset_ptr + 0xf0;
-      if ((new_type & REGION_YOUNG_MASK) != 0)
-        *(uint *)state_ptr = 2;
-      else if ((new_type & REGION_OLD_MASK) != 0)
-        *(uint *)state_ptr = 0;
-
-      uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
-      bool needs_remset_update = (new_type & REGION_OLD_MASK) == 0;
-      uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
-      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
-      *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
-      return new_alloc_region;
-    }
-    return 0;
-  }
   uintptr_t new_gc_alloc_region(uintptr_t region_ptr, size_t word_sz)
   {
     int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
@@ -4661,17 +4601,9 @@ public:
     bool has_more_regions;
     uint heap_region_type;
     if (type == ATTR_TYPE_OLD)
-    {
       heap_region_type = REGION_TYPE_OLD;
-      has_more_regions = true;
-    }
     else
-    {
       heap_region_type = REGION_TYPE_SURVIVOR;
-      uint len = *(uint *)(grow_array_ptr);
-      uint max_survivor_regions = *(uint *)(policy_ptr + MAX_SURVIVOR_REGIONS_OFFSET);
-      has_more_regions = len < max_survivor_regions;
-    }
 
     uintptr_t new_alloc_region = new_region(word_sz, heap_region_type, node_index);
 
@@ -4692,14 +4624,6 @@ public:
         *(int *)(grow_array_ptr) = len;
         uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
         *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
-
-        uintptr_t regions_on_node_ptr = survivor_ptr + REGIONS_ON_NODE_OFFSET;
-        uintptr_t count_per_node = *(uintptr_t *)(regions_on_node_ptr);
-        uintptr_t numa = *(uintptr_t *)(regions_on_node_ptr + 0x8);
-        uint num_active_node_ids = *(uint *)(numa + ACTIVE_NODE_IDS_OFFSET);
-        uint new_node_index = *(uint *)(new_alloc_region + NODE_INDEX_OFFSET);
-        if (new_node_index < num_active_node_ids)
-          *(uint *)(count_per_node + new_node_index * 4) += 1;
       }
       else
         *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
@@ -4748,26 +4672,23 @@ public:
 
       bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
 
-      // if (during_im && allocated_bytes > 0)
-      //{
-      //   uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
-      //   uintptr_t start = *(uintptr_t *)(alloc_region + NEXT_TOP_AT_MARK_START_OFFSET);
-      //   uintptr_t end = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
-      //   uintptr_t root_regions_ptr = cm + 0xb0;
-      //   uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
-      //   uintptr_t idx = *(uintptr_t *)(root_regions_ptr + 0x10);
-      //   uintptr_t mem_region = root_regions_array + idx * 0x10;
-      //   *(uintptr_t *)(mem_region) = start;
-      //   *(uintptr_t *)(mem_region + 0x8) = (end - start) / OBJECT_PTR_SIZE;
-      //   *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
-      // }
+      if (during_im && allocated_bytes > 0)
+      {
+        uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
+        uintptr_t start = *(uintptr_t *)(alloc_region + NEXT_TOP_AT_MARK_START_OFFSET);
+        uintptr_t end = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+        uintptr_t root_regions_ptr = cm + 0xb0;
+        uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
+        uintptr_t idx = *(uintptr_t *)(root_regions_ptr + 0x10);
+        uintptr_t mem_region = root_regions_array + idx * 0x10;
+        *(uintptr_t *)(mem_region) = start;
+        *(uintptr_t *)(mem_region + 0x8) = (end - start) / OBJECT_PTR_SIZE;
+        *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
+      }
 
       *(uintptr_t *)(region_ptr + USED_BYTES_BEFORE_OFFSET) = 0;
       *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = dummy_region;
     }
-    // uintptr_t new_alloc_region = (uintptr_t)(((G1AllocRegion *)region_ptr)->allocate_new_region(desired_word_size, false));
-    // G1HeapRegionAttr::region_type_t type = *(int8_t *)(region_ptr + 0x40);
-    // uintptr_t new_alloc_region = (uintptr_t)_g1h->new_gc_alloc_region(desired_word_size, type, *(uint *)(region_ptr + 0x30));
     uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
 
     if (new_alloc_region != 0)
@@ -4792,52 +4713,6 @@ public:
       return 0;
   }
 
-  uintptr_t attempt_allocation_using_new_region_debug(uintptr_t region_ptr, size_t desired_word_size, size_t *actual_word_size)
-  {
-    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
-
-    if (new_alloc_region != 0)
-    {
-      *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
-      uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
-      uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
-      *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
-
-      bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
-      size_t temp;
-      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
-
-      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = new_alloc_region;
-      *(uint *)(region_ptr + COUNT_OFFSET) += 1;
-
-      if (result != 0)
-        *actual_word_size = desired_word_size;
-      return result;
-    }
-    else
-      return 0;
-  }
-
-  uintptr_t par_allocate_during_gc_debug(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint node_index, uintptr_t allocator_ptr, G1ParScanThreadState *pss)
-  {
-    uintptr_t result = 0;
-    uintptr_t region_ptr = 0;
-    if (dest_attr_type == 0)
-    {
-      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
-      region_ptr = survivor_gc_alloc_ptr + node_index * 0x48;
-    }
-    else if (dest_attr_type == 1)
-    {
-      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
-      region_ptr = old_gc_alloc_region_ptr;
-    }
-
-    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
-
-    result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
-    return result;
-  }
   uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint node_index, uintptr_t allocator_ptr, G1ParScanThreadState *pss)
   {
     uintptr_t result = 0;
@@ -4893,38 +4768,16 @@ public:
       }
     }
 
-    if (result != 0 && dest_attr_type == 0)
-    {
-      uintptr_t end = result + *actual_word_size * OBJECT_PTR_SIZE;
-      uintptr_t card_table_ptr = *(uintptr_t *)((uintptr_t)_g1h + 0x78);
-      uintptr_t _byte_map_base = *(uintptr_t *)(card_table_ptr + BYTE_MAP_BASE_OFFSET);
-      // card_shift = 9
-      uintptr_t first = _byte_map_base + (result >> 9);
-      uintptr_t last = _byte_map_base + ((end - OBJECT_PTR_SIZE) >> 9);
-      // g1_young_gen = 4
-      while (first < last)
-      {
-        *(uint8_t *)(first) = 4;
-        ++first;
-      }
-    }
-
-    // young attemp bot updates all zero
-    // if (!bot_updates)
-    //  result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
-    // else
-    //  result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
     return result;
   }
 
   uintptr_t allocate_direct_or_new_plab(uintptr_t dest_attr_ptr, int8_t dest_attr_type, size_t word_sz, bool *plab_refill_failed, uint node_index, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss)
   {
-
     uintptr_t plab_stats_ptr = 0;
     if (dest_attr_type == 0)
       plab_stats_ptr = (uintptr_t)_g1h + 0x250;
     else if (dest_attr_type == 1)
-      plab_stats_ptr = (uintptr_t)_g1h + 0x2d0;
+      plab_stats_ptr = (uintptr_t)_g1h + 0x2e0;
 
     // @notice: single thread
     uint no_of_gc_workers = 1;
@@ -4942,89 +4795,90 @@ public:
 
     uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
-    // if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
-    //{
-    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
-    uintptr_t buffer;
-    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
-    // uintptr_t obj_ptr = (uintptr_t)(((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab_debug(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, plab_refill_failed, node_index, plab_word_size, required_in_plab, (PLAB *)buffer));
-
-    size_t result = 0;
-    uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
-    uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
-    if (top_ptr < hard_end_ptr)
+    if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
+      uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+      uintptr_t buffer;
+      buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+
+      size_t result = 0;
+      uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
+      uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+      if (top_ptr < hard_end_ptr)
       {
-        uintptr_t start = top_ptr;
-        size_t words = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
-        uintptr_t klass_ptr = 0;
-        if (words >= 3)
         {
-          size_t payload_size = words - 3;
-          size_t len = payload_size * OBJECT_PTR_SIZE / 4;
-          *(int *)(start + ArrayLenOff) = len;
+          uintptr_t start = top_ptr;
+          size_t words = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
+          uintptr_t klass_ptr = 0;
+          if (words >= (UseCompressedClassPointers ? 2 : 3))
+          {
+            size_t payload_size = words - (UseCompressedClassPointers ? 2 : 3);
+            size_t len = payload_size * OBJECT_PTR_SIZE / 4;
+            *(int *)(start + ArrayLenOff) = len;
 
-          klass_ptr = (uintptr_t)Universe::intArrayKlassObj();
+            klass_ptr = (uintptr_t)Universe::intArrayKlassObj();
+          }
+          else if (words > 0)
+            klass_ptr = (uintptr_t)vmClasses::Object_klass();
+          *(uintptr_t *)(start + MarkWordOff) = (0x0 | 0x1);
+          if (UseCompressedClassPointers)
+            *(uint *)(start + KlassOff) = (klass_ptr - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift();
+          else
+            *(uintptr_t *)(start + KlassOff) = klass_ptr;
         }
-        else if (words > 0)
-          klass_ptr = (uintptr_t)vmClasses::Object_klass();
-        *(uintptr_t *)(start + MarkWordOff) = (0x0 | 0x1);
-        *(uintptr_t *)(start + KlassOff) = klass_ptr;
+
+        *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
+        size_t remaining = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
+        *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
+        *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
+        result = remaining;
       }
+      *(uintptr_t *)(buffer + 0x50) += result;
 
-      *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
-      size_t remaining = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
-      *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
-      *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
-      result = remaining;
+      //__num_plab_fills[dest.type()]++
+      uintptr_t num_plab_fills = plab_allocator_ptr + 0x30;
+      *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE) += 1;
+
+      size_t actual_plab_size = 0;
+      // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
+      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr, pss);
+
+      if (obj_ptr != 0)
+      {
+        *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
+        *(uintptr_t *)(buffer + 0x28) = obj_ptr;
+        *(uintptr_t *)(buffer + 0x30) = obj_ptr;
+        *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
+        *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
+        *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
+
+        uintptr_t obj = obj_ptr;
+        size_t delta = actual_plab_size - 2;
+        if (delta >= word_sz)
+          *(uintptr_t *)(buffer + 0x30) = obj + word_sz * OBJECT_PTR_SIZE;
+        else
+          obj = 0;
+        return obj;
+      }
+      *plab_refill_failed = true;
     }
-    *(uintptr_t *)(buffer + 0x50) += result;
-
-    //__num_plab_fills[dest.type()]++
-    uintptr_t num_plab_fills = plab_allocator_ptr + 0x30;
-    *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE) += 1;
-
-    size_t actual_plab_size = 0;
-    // obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
-    uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr, pss);
-
-    if (obj_ptr != 0)
-    {
-      *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
-      *(uintptr_t *)(buffer + 0x28) = obj_ptr;
-      *(uintptr_t *)(buffer + 0x30) = obj_ptr;
-      *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
-      *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
-      *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
-
-      uintptr_t obj = obj_ptr;
-      size_t delta = actual_plab_size - 2;
-      if (delta >= word_sz)
-        *(uintptr_t *)(buffer + 0x30) = obj + word_sz * OBJECT_PTR_SIZE;
-      else
-        obj = 0;
-      return obj;
-    }
-    *plab_refill_failed = true;
-    //}
 
     temp = 0;
-    // uintptr_t result = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, word_sz, &temp, node_index);
+    // uintptr_t obj = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, word_sz, &temp, node_index);
     uintptr_t obj = par_allocate_during_gc(dest_attr_type, word_sz, word_sz, &temp, node_index, allocator_ptr, pss);
-    tty->print_cr("needs recall, and the result is %lx", obj);
-    if (obj != 0)
-    {
-      // uintptr_t direct_allocated = plab_allocator_ptr + 0x20;
-      //*(uintptr_t *)(direct_allocated + dest_attr_type * OBJECT_PTR_SIZE) += word_sz;
-      // uintptr_t num_direct_allocations = plab_allocator_ptr + 0x40;
-      //*(uintptr_t *)(num_direct_allocations + dest_attr_type * OBJECT_PTR_SIZE) += 1;
-    }
     return obj;
   }
 
   uintptr_t do_copy_to_survivor_space(uintptr_t region_attr_ptr, uintptr_t old, uintptr_t old_mark, G1ParScanThreadState *pss)
   {
-    uintptr_t klass_ptr = *(uintptr_t *)(old + KlassOff);
+    uintptr_t klass_ptr;
+    if (UseCompressedClassPointers)
+    {
+      uint offset = *(uint *)(old + KlassOff);
+      klass_ptr = (uintptr_t)CompressedKlassPointers::base() + ((uintptr_t)offset << CompressedKlassPointers::shift());
+    }
+    else
+      klass_ptr = *(uintptr_t *)(old + KlassOff);
 
     uint64_t lh_kid = *(uint64_t *)(klass_ptr + LhKidOff);
     int lh = (int)lh_kid;
@@ -5104,43 +4958,33 @@ public:
 
     if (obj_ptr == 0)
     {
-      log_info(gc, task)("do allocate copy slow");
-      // obj_ptr = (uintptr_t)pss->allocate_copy_slow((G1HeapRegionAttr *)dest_attr_ptr, (oop)old, size, age, node_index);
-      bool is_old = dest_attr_type == ATTR_TYPE_OLD;
-      bool old_gen_is_full = *(bool *)((uintptr_t)pss + 0x1e8);
-      if (!(is_old && old_gen_is_full))
+      bool plab_refill_failed = false;
+      // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(*(G1HeapRegionAttr *)dest_attr_ptr, size, &plab_refill_failed, node_index);
+      obj_ptr = allocate_direct_or_new_plab(dest_attr_ptr, dest_attr_type, size, &plab_refill_failed, node_index, plab_allocator_ptr, pss);
+      if (obj_ptr == 0)
       {
-        bool plab_refill_failed = false;
-        // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(*(G1HeapRegionAttr *)dest_attr_ptr, size, &plab_refill_failed, node_index);
-        obj_ptr = allocate_direct_or_new_plab(dest_attr_ptr, dest_attr_type, size, &plab_refill_failed, node_index, plab_allocator_ptr, pss);
-        if (obj_ptr == 0)
+        bool plab_refill_in_old_failed = false;
+
+        // plab_allocate
+        buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE));
+        uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+        uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+        if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
         {
-          if (dest_attr_type == 0)
-          {
-            bool plab_refill_in_old_failed = false;
-
-            // plab_allocate
-            buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE));
-            uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-            uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-            if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
-            {
-              obj_ptr = region_top;
-              *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
-            }
-            else
-            {
-              G1HeapRegionAttr temp;
-              temp.set_old();
-              // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, node_index);
-              obj_ptr = allocate_direct_or_new_plab((uintptr_t)&temp, 1, size, &plab_refill_in_old_failed, node_index, plab_allocator_ptr, pss);
-            }
-
-            // 这里会对后面的dest_attr有影响
-            *(int8_t *)(dest_attr_ptr + 1) = 1;
-            dest_attr_type = 1;
-          }
+          obj_ptr = region_top;
+          *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
         }
+        else
+        {
+          G1HeapRegionAttr temp;
+          temp.set_old();
+          // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, node_index);
+          obj_ptr = allocate_direct_or_new_plab((uintptr_t)&temp, 1, size, &plab_refill_in_old_failed, node_index, plab_allocator_ptr, pss);
+        }
+
+        // 这里会对后面的dest_attr有影响
+        *(int8_t *)(dest_attr_ptr + 1) = 1;
+        dest_attr_type = 1;
       }
     }
 
@@ -5166,7 +5010,7 @@ public:
       *((size_t *)young_words_base + young_index) += size;
     }
 
-    //// upadte age
+    // upadte age
     uint64_t new_mark = old_mark;
     // 这里的dest attr type可能已经被修改了
     if (dest_attr_type == ATTR_TYPE_YOUNG)
@@ -5180,9 +5024,6 @@ public:
       }
       else
         new_mark = (old_mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & AGE_MASK) << AGE_SHIFT);
-      // this not needs
-      // uintptr_t age_table_ptr = (uintptr_t)pss + AGE_TABLE_OFFSET;
-      //*((size_t *)age_table_ptr + (age + 1 < MAX_AGE ? age + 1 : age)) += size;
     }
     *(uint64_t *)(obj_ptr + MarkWordOff) = new_mark;
 
@@ -5223,9 +5064,9 @@ public:
         }
 
         uintptr_t low = obj_ptr + ArrayElementOff;
-        uintptr_t high = obj_ptr + ArrayElementOff + step_index * OBJECT_PTR_SIZE;
+        uintptr_t high = obj_ptr + ArrayElementOff + step_index * (UseCompressedOops ? 4 : 8);
         uintptr_t p = obj_ptr + ArrayElementOff;
-        uintptr_t q = p + array_length * OBJECT_PTR_SIZE;
+        uintptr_t q = p + array_length * (UseCompressedOops ? 4 : 8);
         if (p < low)
           p = low;
         if (q > high)
@@ -5234,7 +5075,7 @@ public:
         {
           //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + OBJCLOSURE_OFFSET))->do_oop((oop *)p);
           do_oop_work(p - obj_ptr + old, p, scanning_in_young, pss);
-          p += OBJECT_PTR_SIZE;
+          p += (UseCompressedOops ? 4 : 8);
         }
       }
       return obj_ptr;
@@ -5252,10 +5093,10 @@ public:
       int offset = *(int *)(end_map);
       int count = *(int *)(end_map + 0x4);
       uintptr_t start = obj_ptr + offset;
-      uintptr_t end = start + count * OBJECT_PTR_SIZE;
+      uintptr_t end = start + count * (UseCompressedOops ? 4 : 8);
       while (start < end)
       {
-        end -= OBJECT_PTR_SIZE;
+        end -= (UseCompressedOops ? 4 : 8);
         //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180))->do_oop((oop *)end);
         do_oop_work(end - obj_ptr + old, end, scanning_in_young, pss);
       }
@@ -5265,49 +5106,60 @@ public:
     {
       uintptr_t static_start = obj_ptr + StaticFieldOff;
       uint staticCount = *(uint *)(old + staticOopFieldCountOff);
-      uintptr_t static_end = static_start + staticCount * OBJECT_PTR_SIZE;
+      uintptr_t static_end = static_start + staticCount * (UseCompressedOops ? 4 : 8);
       while (static_start < static_end)
       {
         do_oop_work(static_start - obj_ptr + old, static_start, scanning_in_young, pss);
-        static_start += OBJECT_PTR_SIZE;
+        static_start += (UseCompressedOops ? 4 : 8);
       }
       //((InstanceMirrorKlass *)klass_ptr)->oop_oop_iterate_statics<oop>((oop)obj_ptr, scanner);
     }
     else if (kid == InstanceRefKlassID)
     {
-      uintptr_t discovered_offset = obj_ptr + DISCOVERED_OFFSET;
-      do_oop_work(old + DISCOVERED_OFFSET, discovered_offset, scanning_in_young, pss);
-      uintptr_t referent_offset = obj_ptr + REFERENT_OFFSET;
-      do_oop_work(old + REFERENT_OFFSET, referent_offset, scanning_in_young, pss);
-      do_oop_work(old + DISCOVERED_OFFSET, discovered_offset, scanning_in_young, pss);
-      //((InstanceRefKlass *)klass_ptr)->oop_oop_iterate_ref_processing<oop>((oop)obj_ptr, scanner);
+      uint discovered_offset;
+      uint referent_offset;
+      if (UseCompressedClassPointers & UseCompressedOops)
+      {
+        discovered_offset = 0x18;
+        referent_offset = 0xc;
+      }
+      else if (UseCompressedOops)
+      {
+        discovered_offset = 0x1c;
+        referent_offset = 0x10;
+      }
+      else
+      {
+        discovered_offset = 0x28;
+        referent_offset = 0x10;
+      }
+      do_oop_work(old + discovered_offset, obj_ptr + discovered_offset, scanning_in_young, pss);
+      do_oop_work(old + referent_offset, obj_ptr + referent_offset, scanning_in_young, pss);
+      do_oop_work(old + discovered_offset, obj_ptr + discovered_offset, scanning_in_young, pss);
     }
     return obj_ptr;
-    //}
-    // else
-    //{
-    //   // @notice: current all in contains so not read bottom and hard_end
-    //   // uintptr_t bottom = *(uintptr_t *)(buffer + BOTTOM_OFFSET);
-    //   // uintptr_t hard_end = *(uintptr_t *)(buffer + HARD_END_OFFSET);
-    //   // if (bottom <= obj_ptr && obj_ptr < hard_end)
-    //   *(uintptr_t *)(buffer + TOP_OFFSET) = obj_ptr;
-    //   return forward_ptr;
-    // }
   }
 
   void do_oop_evac(uintptr_t task, G1ParScanThreadState *pss)
   {
-    uintptr_t obj = *(uintptr_t *)task;
+    uintptr_t obj;
+    uintptr_t offset = *(uintptr_t *)task;
+    if (UseCompressedOops)
+    {
+      offset = (uint32_t)offset;
+      if (offset == 0)
+        obj = 0;
+      else
+        obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)offset << CompressedOops::shift());
+    }
+    else
+      obj = offset;
 
     uintptr_t regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
     uint regionAttrShiftBy = pss->getRegionAttrShiftBy();
 
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
-    // int8_t region_attr_type = *(int8_t *)(region_attr_ptr + TYPE_OFFSET);
-
-    // if (region_attr_type < TYPE_YOUNG) // not in cset
-    //   return;
 
     uintptr_t m_value = *(uintptr_t *)(obj + MarkWordOff);
     // m.is_marked
@@ -5320,7 +5172,13 @@ public:
       // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr, (oop)obj, markWord(m_value));
       obj = do_copy_to_survivor_space(region_attr_ptr, obj, m_value, pss);
 
-    *(uintptr_t *)task = obj;
+    if (UseCompressedOops)
+    {
+      uintptr_t writeObj = (obj - (uintptr_t)CompressedOops::base()) >> CompressedOops::shift();
+      *(uint32_t *)task = writeObj;
+    }
+    else
+      *(uintptr_t *)task = obj;
 
     if (((task ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
       return;
@@ -5334,9 +5192,9 @@ public:
     }
   }
 
-  void do_partial_array(uintptr_t task, G1ParScanThreadState *pss)
+  void do_partial_array(uintptr_t src, G1ParScanThreadState *pss)
   {
-    uintptr_t from_obj = task - 0x2;
+    uintptr_t from_obj = src;
     uintptr_t m_value = *(uintptr_t *)from_obj;
     uintptr_t clear_lock_bits = m_value & ~LOCK_MASK_IN_PLACE;
     uintptr_t to_obj = clear_lock_bits;
@@ -5375,10 +5233,10 @@ public:
     bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
     uintptr_t scanning_in_young = typeIsYoung;
 
-    uintptr_t low = to_obj + ArrayElementOff + start * OBJECT_PTR_SIZE;
-    uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OBJECT_PTR_SIZE;
+    uintptr_t low = to_obj + ArrayElementOff + start * (UseCompressedOops ? 4 : 8);
+    uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * (UseCompressedOops ? 4 : 8);
     uintptr_t p = to_obj + ArrayElementOff;
-    uintptr_t q = p + (start + chunk_size) * OBJECT_PTR_SIZE;
+    uintptr_t q = p + (start + chunk_size) * (UseCompressedOops ? 4 : 8);
     if (p < low)
       p = low;
     if (q > high)
@@ -5386,19 +5244,16 @@ public:
     while (p < q)
     {
       do_oop_work(p - to_obj + from_obj, p, scanning_in_young, pss);
-      p += OBJECT_PTR_SIZE;
+      p += (UseCompressedOops ? 4 : 8);
     }
   }
 
   void dispatch_task(uintptr_t task, G1ParScanThreadState *pss)
   {
-    if ((task & 0x3) == 0x1)
-    {
-    }
-    else if ((task & 0x3) == 0x0)
-      do_oop_evac(task, pss);
+    if ((task & 0x3) == 0x2)
+      do_partial_array(task - 0x2, pss);
     else
-      do_partial_array(task, pss);
+      do_oop_evac(task - (task & 0x3), pss);
   }
 
   void printOthers(G1ParScanThreadState *pss)
@@ -5811,113 +5666,113 @@ public:
       par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
       par.numaPtr = (uintptr_t)G1NUMA::numa();
       Ticks start = Ticks::now();
-      tty->print_cr("work start");
-      ioctl(fd, HWGC_IOC_START, &par);
-      while (1)
-      {
-        ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
-        if (state == HWGC_DONE)
-        {
-          Ticks end = Ticks::now();
-          jlong nanos = (end - start).nanoseconds();
-          tty->print_cr("work done, time is %ld ns", nanos);
-          break;
-        }
-        if (state == HWGC_WAIT_ENQUEUED)
-        {
-          lseek(fd, 0xd0, SEEK_SET);
-          uint64_t allocator_ptr, buffer = 0;
-          read(fd, &allocator_ptr, sizeof(allocator_ptr));
-          buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
-        }
-        if (state == HWGC_WAIT_MALLOC)
-        {
-          lseek(fd, 0xd0, SEEK_SET);
+      // tty->print_cr("work start");
+      // ioctl(fd, HWGC_IOC_START, &par);
+      // while (1)
+      //{
+      //   ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+      //   if (state == HWGC_DONE)
+      //   {
+      //     Ticks end = Ticks::now();
+      //     jlong nanos = (end - start).nanoseconds();
+      //     tty->print_cr("work done, time is %ld ns", nanos);
+      //     break;
+      //   }
+      //   if (state == HWGC_WAIT_ENQUEUED)
+      //   {
+      //     lseek(fd, 0xd0, SEEK_SET);
+      //     uint64_t allocator_ptr, buffer = 0;
+      //     read(fd, &allocator_ptr, sizeof(allocator_ptr));
+      //     buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
+      //     ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
+      //   }
+      //   if (state == HWGC_WAIT_MALLOC)
+      //   {
+      //     lseek(fd, 0xd0, SEEK_SET);
 
-          uintptr_t grow_array_ptr, len;
-          read(fd, &grow_array_ptr, 8);
-          read(fd, &len, 4);
-          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
-        }
-        if (state == HWGC_WAIT_PAGEFAULT)
-        {
-          lseek(fd, 0xd0, SEEK_SET);
-          uintptr_t vaddr, data, write, size;
-          read(fd, &vaddr, sizeof(vaddr));
-          read(fd, &data, sizeof(data));
-          read(fd, &write, sizeof(write));
-          read(fd, &size, sizeof(size));
-          if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
-            tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+      //    uintptr_t grow_array_ptr, len;
+      //    read(fd, &grow_array_ptr, 8);
+      //    read(fd, &len, 4);
+      //    ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
+      //  }
+      //  if (state == HWGC_WAIT_PAGEFAULT)
+      //  {
+      //    lseek(fd, 0xd0, SEEK_SET);
+      //    uintptr_t vaddr, data, write, size;
+      //    read(fd, &vaddr, sizeof(vaddr));
+      //    read(fd, &data, sizeof(data));
+      //    read(fd, &write, sizeof(write));
+      //    read(fd, &size, sizeof(size));
+      //    if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+      //      tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
 
-          uint64_t return_value = 0;
-          if (write)
-            memcpy((void *)vaddr, &data, size);
-          else
-            memcpy(&return_value, (void *)vaddr, size);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
-        }
-        if (state == HWGC_DEBUG)
-        {
-          lseek(fd, 0xd0, SEEK_SET);
+      //    uint64_t return_value = 0;
+      //    if (write)
+      //      memcpy((void *)vaddr, &data, size);
+      //    else
+      //      memcpy(&return_value, (void *)vaddr, size);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+      //  }
+      //  if (state == HWGC_DEBUG)
+      //  {
+      //    lseek(fd, 0xd0, SEEK_SET);
 
-          // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
-          // read(fd, &dest_attr_type, 8);
-          // read(fd, &min_word_size, 8);
-          // read(fd, &desired_word_size, 8);
-          // read(fd, &allocator_ptr, 8);
-          // uintptr_t temp;
-          // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
-          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-          // uintptr_t region_ptr, desired_word_size;
-          // read(fd, &region_ptr, 8);
-          // read(fd, &desired_word_size, 8);
-          // uintptr_t temp;
-          //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
-          //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //    // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+      //    // read(fd, &dest_attr_type, 8);
+      //    // read(fd, &min_word_size, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &allocator_ptr, 8);
+      //    // uintptr_t temp;
+      //    // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+      //    // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+      //    // uintptr_t region_ptr, desired_word_size;
+      //    // read(fd, &region_ptr, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // uintptr_t temp;
+      //    //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+      //    //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-          // uintptr_t desired_word_size, heap_region_type, node_index;
-          // read(fd, &desired_word_size, 8);
-          // read(fd, &heap_region_type, 8);
-          // read(fd, &node_index, 8);
-          // size_t temp;
-          // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //    // uintptr_t desired_word_size, heap_region_type, node_index;
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &heap_region_type, 8);
+      //    // read(fd, &node_index, 8);
+      //    // size_t temp;
+      //    // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-          uintptr_t node_index;
-          read(fd, &node_index, 8);
-          uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-        }
-      }
-      close(fd);
+      //    uintptr_t node_index;
+      //    read(fd, &node_index, 8);
+      //    uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //  }
+      //}
+      // close(fd);
 
       //@notice : do task
-      // tag = false; // 决定是否需要分发处理该task
-      // do
-      //{
-      //  uintptr_t task;
-      //  uint localBot = *(uint *)(bottom_addr);
-      //  uint age_top = *(uint *)(age_top_addr);
-      //  uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
-      //  if (dirty_n_elems <= 0)
-      //    tag = false;
-      //  else
-      //  {
-      //    localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-      //    *(uint *)(bottom_addr) = localBot;
-      //    // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
-      //    task = *(uintptr_t *)(elems + localBot * 8);
-      //    tag = true;
-      //  }
-      //  if (tag)
-      //    dispatch_task(task, pss);
-      //} while (tag);
+      tag = false; // 决定是否需要分发处理该task
+      do
+      {
+        uintptr_t task;
+        uint localBot = *(uint *)(bottom_addr);
+        uint age_top = *(uint *)(age_top_addr);
+        uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+        if (dirty_n_elems <= 0)
+          tag = false;
+        else
+        {
+          localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
+          *(uint *)(bottom_addr) = localBot;
+          // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
+          task = *(uintptr_t *)(elems + localBot * 8);
+          tag = true;
+        }
+        if (tag)
+          dispatch_task(task, pss);
+      } while (tag);
       // evacuate_live_objects(pss, worker_id);
       // Ticks end = Ticks::now();
       // jlong nanos = (end - start).nanoseconds();
