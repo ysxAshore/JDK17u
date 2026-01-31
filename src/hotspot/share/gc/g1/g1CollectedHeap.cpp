@@ -4990,20 +4990,9 @@ public:
 
     uintptr_t forward_ptr = 0;
     uintptr_t m = (obj_ptr & ~LOCK_MASK_IN_PLACE) | MARKED_VALUE;
-    // uintptr_t old_mark = *(uintptr_t *)(obj + MarkWordOff);
-    // if (old_mark == m_value)
-    //{
-    //   *(uintptr_t *)(obj + MarkWordOff) = m;
-    //   forward_ptr = 0;
-    // }
-    // else
-    //   forward_ptr = old_mark & ~LOCK_MASK_IN_PLACE;
-    //  @notice: must equal
     *(uintptr_t *)(old + MarkWordOff) = m;
     forward_ptr = 0;
 
-    // if (forward_ptr == 0)
-    //{
     {
       const uint young_index = *(uint *)(from_region + YOUND_INDEX_IN_CSET_OFFSET);
       uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
@@ -5623,6 +5612,12 @@ public:
         uint64_t thread;
         uint64_t dummyRegion;
         uint64_t numaPtr;
+        uint64_t compressedOopBase;
+        uint64_t compressedKlassPointerBase;
+        uint8_t compressedOopShift;
+        uint8_t compressedKlassPointerShift;
+        uint8_t useCompressedOops;
+        uint8_t useCompressedKlassPointers;
       };
       enum hwgc_state
       {
@@ -5665,114 +5660,120 @@ public:
       par.thread = (uintptr_t)Thread::current();
       par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
       par.numaPtr = (uintptr_t)G1NUMA::numa();
+      par.compressedOopBase = (uintptr_t)CompressedOops::base();
+      par.compressedKlassPointerBase = (uintptr_t)CompressedKlassPointers::base();
+      par.compressedOopShift = CompressedOops::shift();
+      par.compressedKlassPointerShift = CompressedKlassPointers::shift();
+      par.useCompressedOops = UseCompressedOops;
+      par.useCompressedKlassPointers = UseCompressedClassPointers;
       Ticks start = Ticks::now();
-      // tty->print_cr("work start");
-      // ioctl(fd, HWGC_IOC_START, &par);
-      // while (1)
-      //{
-      //   ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
-      //   if (state == HWGC_DONE)
-      //   {
-      //     Ticks end = Ticks::now();
-      //     jlong nanos = (end - start).nanoseconds();
-      //     tty->print_cr("work done, time is %ld ns", nanos);
-      //     break;
-      //   }
-      //   if (state == HWGC_WAIT_ENQUEUED)
-      //   {
-      //     lseek(fd, 0xd0, SEEK_SET);
-      //     uint64_t allocator_ptr, buffer = 0;
-      //     read(fd, &allocator_ptr, sizeof(allocator_ptr));
-      //     buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
-      //     ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
-      //   }
-      //   if (state == HWGC_WAIT_MALLOC)
-      //   {
-      //     lseek(fd, 0xd0, SEEK_SET);
+      tty->print_cr("work start");
+      ioctl(fd, HWGC_IOC_START, &par);
+      while (1)
+      {
+        ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+        if (state == HWGC_DONE)
+        {
+          Ticks end = Ticks::now();
+          jlong nanos = (end - start).nanoseconds();
+          tty->print_cr("work done, time is %ld ns", nanos);
+          break;
+        }
+        if (state == HWGC_WAIT_ENQUEUED)
+        {
+          lseek(fd, 0xe0, SEEK_SET);
+          uint64_t allocator_ptr, buffer = 0;
+          read(fd, &allocator_ptr, sizeof(allocator_ptr));
+          buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
+        }
+        if (state == HWGC_WAIT_MALLOC)
+        {
+          lseek(fd, 0xe0, SEEK_SET);
 
-      //    uintptr_t grow_array_ptr, len;
-      //    read(fd, &grow_array_ptr, 8);
-      //    read(fd, &len, 4);
-      //    ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
-      //  }
-      //  if (state == HWGC_WAIT_PAGEFAULT)
-      //  {
-      //    lseek(fd, 0xd0, SEEK_SET);
-      //    uintptr_t vaddr, data, write, size;
-      //    read(fd, &vaddr, sizeof(vaddr));
-      //    read(fd, &data, sizeof(data));
-      //    read(fd, &write, sizeof(write));
-      //    read(fd, &size, sizeof(size));
-      //    if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
-      //      tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+          uintptr_t grow_array_ptr, len;
+          read(fd, &grow_array_ptr, 8);
+          read(fd, &len, 4);
+          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
+        }
+        if (state == HWGC_WAIT_PAGEFAULT)
+        {
+          lseek(fd, 0xe0, SEEK_SET);
+          uintptr_t vaddr, data, write, size;
+          read(fd, &vaddr, sizeof(vaddr));
+          read(fd, &data, sizeof(data));
+          read(fd, &write, sizeof(write));
+          read(fd, &size, sizeof(size));
+          if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+            tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
 
-      //    uint64_t return_value = 0;
-      //    if (write)
-      //      memcpy((void *)vaddr, &data, size);
-      //    else
-      //      memcpy(&return_value, (void *)vaddr, size);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
-      //  }
-      //  if (state == HWGC_DEBUG)
-      //  {
-      //    lseek(fd, 0xd0, SEEK_SET);
+          uint64_t return_value = 0;
+          if (write)
+            memcpy((void *)vaddr, &data, size);
+          else
+            memcpy(&return_value, (void *)vaddr, size);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+        }
+        if (state == HWGC_DEBUG)
+        {
+          lseek(fd, 0xe0, SEEK_SET);
 
-      //    // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
-      //    // read(fd, &dest_attr_type, 8);
-      //    // read(fd, &min_word_size, 8);
-      //    // read(fd, &desired_word_size, 8);
-      //    // read(fd, &allocator_ptr, 8);
-      //    // uintptr_t temp;
-      //    // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
-      //    // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-      //    // uintptr_t region_ptr, desired_word_size;
-      //    // read(fd, &region_ptr, 8);
-      //    // read(fd, &desired_word_size, 8);
-      //    // uintptr_t temp;
-      //    //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
-      //    //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-      //    // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+          // read(fd, &dest_attr_type, 8);
+          // read(fd, &min_word_size, 8);
+          // read(fd, &desired_word_size, 8);
+          // read(fd, &allocator_ptr, 8);
+          // uintptr_t temp;
+          // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+          // uintptr_t region_ptr, desired_word_size;
+          // read(fd, &region_ptr, 8);
+          // read(fd, &desired_word_size, 8);
+          // uintptr_t temp;
+          //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+          //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-      //    // uintptr_t desired_word_size, heap_region_type, node_index;
-      //    // read(fd, &desired_word_size, 8);
-      //    // read(fd, &heap_region_type, 8);
-      //    // read(fd, &node_index, 8);
-      //    // size_t temp;
-      //    // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+          // uintptr_t desired_word_size, heap_region_type, node_index;
+          // read(fd, &desired_word_size, 8);
+          // read(fd, &heap_region_type, 8);
+          // read(fd, &node_index, 8);
+          // size_t temp;
+          // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
+          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-      //    uintptr_t node_index;
-      //    read(fd, &node_index, 8);
-      //    uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-      //  }
-      //}
-      // close(fd);
+          uintptr_t node_index;
+          read(fd, &node_index, 8);
+          uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+        }
+      }
+      close(fd);
 
       //@notice : do task
-      tag = false; // 决定是否需要分发处理该task
-      do
-      {
-        uintptr_t task;
-        uint localBot = *(uint *)(bottom_addr);
-        uint age_top = *(uint *)(age_top_addr);
-        uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
-        if (dirty_n_elems <= 0)
-          tag = false;
-        else
-        {
-          localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-          *(uint *)(bottom_addr) = localBot;
-          // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
-          task = *(uintptr_t *)(elems + localBot * 8);
-          tag = true;
-        }
-        if (tag)
-          dispatch_task(task, pss);
-      } while (tag);
+      // tag = false; // 决定是否需要分发处理该task
+      // do
+      //{
+      //  uintptr_t task;
+      //  uint localBot = *(uint *)(bottom_addr);
+      //  uint age_top = *(uint *)(age_top_addr);
+      //  uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+      //  if (dirty_n_elems <= 0)
+      //    tag = false;
+      //  else
+      //  {
+      //    localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
+      //    *(uint *)(bottom_addr) = localBot;
+      //    // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
+      //    task = *(uintptr_t *)(elems + localBot * 8);
+      //    tag = true;
+      //  }
+      //  if (tag)
+      //    dispatch_task(task, pss);
+      //} while (tag);
       // evacuate_live_objects(pss, worker_id);
       // Ticks end = Ticks::now();
       // jlong nanos = (end - start).nanoseconds();
