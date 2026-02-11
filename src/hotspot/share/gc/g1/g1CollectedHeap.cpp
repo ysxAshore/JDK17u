@@ -4237,22 +4237,42 @@ public:
 #define SCANNER_TASK_SIZE 8 // scannertask 属性只有一个void *p
 #define ATTR_SIZE 2
 #define OBJECT_PTR_SIZE 8
+
+#define TRACE 0
+#define IFDEF(cond, stmt) \
+  if (cond)               \
+    do                    \
+    {                     \
+      stmt;               \
+    } while (0);
+
   uintptr_t buffer_node_allocate(uintptr_t allocator_ptr)
   {
     uintptr_t node = 0;
     uintptr_t free_list_ptr = allocator_ptr + 0x80;
     {
       node = *(uintptr_t *)free_list_ptr;
+      IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to get %lx", free_list_ptr, 8, node));
+
       uintptr_t new_top = 0;
       if (node != 0)
+      {
         new_top = *(uintptr_t *)(node + 0x8);
+        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to get %lx", node + 0x8, 8, new_top));
+      }
       //@notice: 这里的cmpxchg(&_top, result, new_top)一定会返回_top == result result 不变
       *(uintptr_t *)free_list_ptr = new_top;
+      IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %lx", free_list_ptr, 8, new_top));
+
       if (node != 0)
+      {
+        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %x", node + 0x8, 8, 0));
         *(uintptr_t *)(node + 0x8) = 0;
+      }
     }
     if (node == 0)
     {
+      IFDEF(TRACE, tty->print_cr("needs interrupt to call buffernode_allocate"));
       node = (uintptr_t)BufferNode::allocate(*(size_t *)(allocator_ptr));
     }
     return node + 0x10;
@@ -4261,22 +4281,32 @@ public:
   void aop_work_enqueue_card(uintptr_t region_attr_ptr, uintptr_t p, G1ParScanThreadState *pss)
   {
     uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %x", region_attr_ptr, 1, needs_remset_update));
+
     if (needs_remset_update == 0)
       return;
 
     uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
     uintptr_t _byte_map = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_OFFSET, 8, _byte_map));
+
     uintptr_t _byte_map_base = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_BASE_OFFSET, 8, _byte_map_base));
 
     uintptr_t res = _byte_map_base + (p >> 9);
     size_t card_index = res - _byte_map;
 
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET, 8, *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET)));
     if (*(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) != card_index)
     {
       uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
       uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
       uintptr_t buffer = *(uintptr_t *)(queue_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr + 0x10, 8, buffer));
+
       size_t index = *(size_t *)(queue_ptr) / OBJECT_PTR_SIZE;
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr, 8, index * 8));
+
       if (index == 0)
       {
         uintptr_t old_node = 0;
@@ -4284,28 +4314,50 @@ public:
         {
           old_node = buffer - 0x10;
           *(size_t *)(old_node) = 0;
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %x", old_node, 8, 0));
         }
 
         uintptr_t node_allocator_ptr = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x8, 8, node_allocator_ptr));
+
         buffer = buffer_node_allocate(node_allocator_ptr);
 
         *(uintptr_t *)(queue_ptr + 0x10) = buffer;
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", queue_ptr + 0x10, 8, buffer));
+
         index = *(size_t *)(node_allocator_ptr); // index = buffersize
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", node_allocator_ptr, 8, index));
+
         *(size_t *)queue_ptr = index * OBJECT_PTR_SIZE;
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr, 8, index * 8));
 
         if (old_node != 0)
         {
           uintptr_t buffer_list_ptr = rdc_local_qset_ptr + 0x18;
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", buffer_list_ptr + 0x10, 8, *(size_t *)(buffer_list_ptr + 0x10)));
           *(size_t *)(buffer_list_ptr + 0x10) += index;
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer_list_ptr + 0x10, 8, *(size_t *)(buffer_list_ptr + 0x10)));
           *(uintptr_t *)(old_node + 0x8) = *(uintptr_t *)buffer_list_ptr;
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", buffer_list_ptr, 8, *(size_t *)(buffer_list_ptr)))
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", old_node + 0x8, 8, *(size_t *)(buffer_list_ptr)));
           *(uintptr_t *)buffer_list_ptr = old_node;
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer_list_ptr, 8, old_node));
+
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", buffer_list_ptr + 0x8, 8, *(size_t *)(buffer_list_ptr + 0x8)))
           if (*(uintptr_t *)(buffer_list_ptr + 0x8) == 0)
+          {
+            IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer_list_ptr + 0x8, 8, old_node));
             *(uintptr_t *)(buffer_list_ptr + 0x8) = old_node;
+          }
         }
       }
       --index;
+
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer + index * 8, 8, res));
       *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", queue_ptr, 8, index * 8));
       *(size_t *)(queue_ptr) = index * OBJECT_PTR_SIZE;
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", (uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET, 8, card_index));
       *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
     }
   }
@@ -4318,6 +4370,8 @@ public:
       heap_oop = *(uint32_t *)src;
     else
       heap_oop = *(uintptr_t *)(src);
+    IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%d bytes) to get %lx", src, 8, heap_oop));
+
     if (heap_oop == 0)
       return;
 
@@ -4325,12 +4379,19 @@ public:
       obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)heap_oop << CompressedOops::shift());
     else
       obj = heap_oop;
+#ifdef TRACE
+    if (UseCompressedOops)
+      tty->print_cr("do_oop_work: calculate %lx %lx %x to get %lx", (uintptr_t)CompressedOops::base(), heap_oop, CompressedOops::shift(), obj);
+#endif
 
     // 15 in mechrevo r78845h 16 in others
     // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
 
     uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * ATTR_SIZE;
+    IFDEF(TRACE, tty->print_cr("do_oop_work: calculate %lx %lx %x to get %lx", (uintptr_t)CompressedOops::base(), heap_oop, CompressedOops::shift(), obj));
+
     int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+    IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", region_attr_ptr + 1, 1, region_attr_type));
 
     if (region_attr_type >= 0)
     {
@@ -4340,11 +4401,13 @@ public:
 
       uint localBot = *(uint *)bottom_addr;
       uint age_top = *(uint *)age_top_addr;
+
       uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
       assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
 
       uintptr_t base = pss->getTaskQueueElemsBase();
       *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = dest + (UseCompressedOops ? 1 : 0);
+
       localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
       *(uint *)bottom_addr = localBot;
     }
@@ -4357,14 +4420,18 @@ public:
         uint region_shiftby = pss->getHeapRegionShiftBy();
         size_t pointer_delta = obj - ((uintptr_t)region_bias << region_shiftby);
         uint region = pointer_delta >> HeapRegion::LogOfHRGrainBytes;
+        IFDEF(TRACE, tty->print_cr("do_oop_work: calculate %x %x %lx to get %x", region_bias, region_shiftby, obj, region));
 
         uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
-
+        IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", bool_base + region, 1, *(bool *)(bool_base + region)));
         if (*(bool *)(bool_base + region))
         {
           *(bool *)(bool_base + region) = false;
+          IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to write %x", bool_base + region, 1, 0));
+
           uintptr_t region_attr = pss->getRegionAttrBase() + region * ATTR_SIZE;
           *(int8_t *)(region_attr + ATTR_TYPE_OFFSET) = ATTR_TYPE_NOTINCSET;
+          IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to write %x", region_attr + 1, 1, -1));
         }
       }
 
@@ -4381,17 +4448,22 @@ public:
     // do
     //{
     uintptr_t top = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+    IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_TOP_OFFSET, 8, top));
+
     uintptr_t end = *(uintptr_t *)(alloc_region + REGION_END_OFFSET);
+    IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_END_OFFSET, 8, end));
+
     size_t available = (end - top) / OBJECT_PTR_SIZE;
     size_t want_to_allocate = available > desired_word_size ? desired_word_size : available;
     if (want_to_allocate >= min_word_size)
     {
       uintptr_t new_top = top + want_to_allocate * OBJECT_PTR_SIZE;
-      uintptr_t result = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
-      // @notice: single thread must equal
-      // if (result == top)
+      // uintptr_t result = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+      //  @notice: single thread must equal
+      //  if (result == top)
       //{
       *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET) = new_top;
+      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + REGION_TOP_OFFSET, 8, new_top));
       *actual_plab_size = want_to_allocate;
       return top;
       //}
@@ -4411,20 +4483,27 @@ public:
       uintptr_t blk_end = result + (*actual_word_size * OBJECT_PTR_SIZE);
       uintptr_t bot_part_ptr = alloc_region + BOT_PART_OFFSET;
       uintptr_t next_offset_threshold = *(uintptr_t *)(bot_part_ptr);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr, 8, next_offset_threshold));
 
       if (blk_end > next_offset_threshold)
       {
         uintptr_t threshold = next_offset_threshold;
         size_t index = *(uintptr_t *)(bot_part_ptr + BOTPART_INDEX_OFFSET);
-        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + BOTPART_BOT_OFFSET);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + BOTPART_INDEX_OFFSET, 8, index));
 
-        {
-          size_t offset = (threshold - blk_start) / OBJECT_PTR_SIZE;
-          uintptr_t array = *(uintptr_t *)(bot_ptr + BOT_ARRAY_OFFSET);
-          *(uint8_t *)(array + index) = offset;
-        }
+        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + BOTPART_BOT_OFFSET);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + BOTPART_BOT_OFFSET, 8, bot_ptr));
+
+        uintptr_t array = *(uintptr_t *)(bot_ptr + BOT_ARRAY_OFFSET);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr + BOT_ARRAY_OFFSET, 8, array));
+
+        size_t offset = (threshold - blk_start) / OBJECT_PTR_SIZE;
+        *(uint8_t *)(array + index) = offset;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", array + index, 1, offset));
 
         uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr, 8, reserved_start));
+
         // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
         size_t end_index = (blk_end - OBJECT_PTR_SIZE - reserved_start) >> 9;
 
@@ -4451,10 +4530,11 @@ public:
                 size_t reach = start_card - 1 + ((1 << (4 * (i + 1))) - 1);
                 offset = 64 + i;
                 size_t num_cards = (reach >= end_card ? end_card : reach) - start_card_for_region + 1;
-                uintptr_t begin = *(uintptr_t *)(bot_ptr + BOT_ARRAY_OFFSET) + start_card_for_region;
+                uintptr_t begin = array + start_card_for_region;
                 while (num_cards--)
                 {
                   *(u_int8_t *)begin = offset;
+                  IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", begin, 1, offset));
                   begin++;
                 }
                 start_card_for_region = reach + 1;
@@ -4468,6 +4548,8 @@ public:
         threshold = reserved_start + ((end_index << 6) + 64) * OBJECT_PTR_SIZE;
         *(uintptr_t *)(bot_part_ptr) = threshold;
         *(uintptr_t *)(bot_part_ptr + BOTPART_INDEX_OFFSET) = index;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr, 8, threshold));
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr + BOTPART_INDEX_OFFSET, 8, index));
       }
     }
     return result;
@@ -4480,12 +4562,17 @@ public:
     bool from_head = (heap_region_type & 0x2) == 0;
     uintptr_t numa_ptr = (uintptr_t)G1NUMA::numa();
     uint active_node_ids = *(uint *)(numa_ptr + ACTIVE_NODE_IDS_OFFSET);
+    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + ACTIVE_NODE_IDS_OFFSET, 4, active_node_ids));
 
     uintptr_t res = 0;
     if (node_index != UINT_MAX - 1 && active_node_ids > 1)
     {
       uint region_size = *(uint *)(numa_ptr + REGION_SIZE_OFFSET);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + REGION_SIZE_OFFSET, 4, region_size));
+
       uint page_size = *(uint *)(numa_ptr + PAGE_SIZE_OFFSET);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + PAGE_SIZE_OFFSET, 4, page_size));
+
       uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
 
       uintptr_t cur;
@@ -4494,16 +4581,19 @@ public:
         cur = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
       else
         cur = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET), 8, cur));
 
       while (cur != 0 && cur_depth < max_search_depth)
       {
         if (node_index == *(uint *)(cur + NODE_INDEX_OFFSET))
           break;
         ++cur_depth;
+        uintptr_t temp = cur;
         if (from_head)
           cur = *(uintptr_t *)(cur + REGION_NEXT_OFFSET);
         else
           cur = *(uintptr_t *)(cur + REGION_PREV_OFFSET);
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", temp + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, cur));
       }
 
       if (cur == 0 || cur_depth >= max_search_depth)
@@ -4513,58 +4603,63 @@ public:
         res = cur;
         uintptr_t prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
         uintptr_t next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_PREV_OFFSET, 8, prev));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_NEXT_OFFSET, 8, next));
+
         if (prev == 0)
           *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = next;
         else
           *(uintptr_t *)(prev + REGION_NEXT_OFFSET) = next;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", prev == 0 ? free_list_ptr + LIST_HEAD_PTR_OFFSET : prev + REGION_NEXT_OFFSET, 8, next));
 
         if (next == 0)
           *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = prev;
         else
           *(uintptr_t *)(next + REGION_PREV_OFFSET) = prev;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", next == 0 ? free_list_ptr + LIST_TAIL_PTR_OFFSET : next + REGION_PREV_OFFSET, 8, prev));
 
         *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
         *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_PREV_OFFSET, 8, 0));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_NEXT_OFFSET, 8, 0));
       }
     }
 
     if (res == 0)
     {
       uint length = *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + LIST_LENGTH_OFFSET, 4, length));
       if (length == 0)
         res = 0;
       else
       {
-        if (from_head)
-        {
-          res = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
-          uintptr_t res_next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
-          *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = res_next;
-          if (res_next == 0)
-            *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = 0;
-          else
-            *(uintptr_t *)(res_next + REGION_PREV_OFFSET) = 0;
-          *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
-        }
+        res = *(uintptr_t *)(free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", (free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET)), 8, res));
+
+        uintptr_t res_conf = *(uintptr_t *)(res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, res_conf));
+
+        *(uintptr_t *)(free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET)) = res_conf;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET), 8, res_conf));
+
+        if (res_conf == 0)
+          *(uintptr_t *)(free_list_ptr + (from_head ? LIST_TAIL_PTR_OFFSET : LIST_HEAD_PTR_OFFSET)) = 0;
         else
-        {
-          res = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
-          uintptr_t res_prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
-          *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = res_prev;
-          if (res_prev == 0)
-            *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = 0;
-          else
-            *(uintptr_t *)(res_prev + REGION_NEXT_OFFSET) = 0;
-          *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
-        }
+          *(uintptr_t *)(res_conf + (from_head ? REGION_PREV_OFFSET : REGION_NEXT_OFFSET)) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res_conf == 0 ? free_list_ptr + (from_head ? LIST_TAIL_PTR_OFFSET : LIST_HEAD_PTR_OFFSET) : res_conf + (from_head ? REGION_PREV_OFFSET : REGION_NEXT_OFFSET), 8, 0));
+
+        *(uintptr_t *)(res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET)) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, 0))
       }
     }
 
     if (res != 0)
     {
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + LIST_LAST_PTR_OFFSET, 8, *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET)))
       if (*(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) == res)
         *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) = 0;
 
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + LIST_LENGTH_OFFSET, 4, *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET)));
       *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET) -= 1;
     }
 
@@ -4577,14 +4672,19 @@ public:
     uintptr_t res = allocate_free_region(heap_region_type, node_index);
 
     bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
+    IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x370, 1, expand_failure));
+
     if (res == 0 && expand_failure)
     {
-      log_info(gc, task)("expand_single_region");
+      IFDEF(TRACE, tty->print_cr("needs interrupt to call expand_single_region"));
       if (_g1h->expand_single_region(node_index))
         // res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
         res = allocate_free_region(heap_region_type, node_index);
       else
+      {
         *(bool *)((uintptr_t)_g1h + 0x370) = false;
+        IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to write %x", (uintptr_t)_g1h + 0x370, 1, 0));
+      }
     }
 
     return res;
@@ -4593,10 +4693,17 @@ public:
   uintptr_t new_gc_alloc_region(uintptr_t region_ptr, size_t word_sz)
   {
     int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", region_ptr + PURPOSE_ATTR_OFFSET, 1, type));
+
     uint node_index = *(uint *)(region_ptr + ALLOC_REGION_NODE_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", region_ptr + ALLOC_REGION_NODE_OFFSET, 4, node_index));
+
     uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
     uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + REGIONS_GROW_ARRAY_OFFSET, 8, grow_array_ptr));
+
     uintptr_t policy_ptr = *(uintptr_t *)((uintptr_t)_g1h + G1H_POLICY_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + G1H_POLICY_OFFSET, 8, policy_ptr));
 
     bool has_more_regions;
     uint heap_region_type;
@@ -4609,39 +4716,59 @@ public:
 
     if (new_alloc_region != 0)
     {
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", (uintptr_t)new_alloc_region + REGION_TYPE_OFFSET, 4, heap_region_type));
       if (heap_region_type == REGION_TYPE_SURVIVOR)
       {
         *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
+
         int len = *(int *)(grow_array_ptr);
         int max = *(int *)(grow_array_ptr + 0x4);
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr, 8, *(uintptr_t *)grow_array_ptr));
+
         if (len == max)
         {
-          log_info(gc, task)("len max %x %x", len, max);
+          IFDEF(TRACE, tty->print_cr("needs interrupt to call grow array grow"));
           ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
         }
         int idx = len;
         ++len;
         *(int *)(grow_array_ptr) = len;
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", grow_array_ptr, 4, len));
+
         uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr + 0x8, 8, data_ptr));
+
         *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %lx", data_ptr + idx * 8, 8, new_alloc_region));
       }
       else
         *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
 
       uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", new_alloc_region + 0xb0, 8, remset_ptr));
+
       uint new_type = *(uint *)(new_alloc_region + REGION_TYPE_OFFSET);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xbc, 4, new_type));
+
       assert(new_type == heap_region_type, "error");
       uintptr_t state_ptr = remset_ptr + 0xf0;
       if ((new_type & REGION_YOUNG_MASK) != 0)
         *(uint *)state_ptr = 2;
       else if ((new_type & REGION_OLD_MASK) != 0)
         *(uint *)state_ptr = 0;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", state_ptr, 4, *(uint *)state_ptr));
 
       uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xb8, 4, hrm_index));
+
       bool needs_remset_update = (new_type & REGION_OLD_MASK) == 0;
       uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
       uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
+
       *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", region_attr_base + hrm_index * ATTR_SIZE, 1, needs_remset_update));
+
       return new_alloc_region;
     }
     return 0;
@@ -4653,57 +4780,100 @@ public:
     {
       // fill up can set false
       uintptr_t bottom = *(uintptr_t *)(alloc_region);
-      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
-      size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region, 8, bottom));
 
+      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, bottom));
+
+      size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
+
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
       *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
 
       int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + PURPOSE_ATTR_OFFSET, 1, type));
+
       if (type == 1)
       {
         uintptr_t old_set = (uintptr_t)_g1h + G1H_OLDSET_OFFSET;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
         *(uint *)(old_set + 0x10) += 1;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
       }
       else
       {
         uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
         *(size_t *)(survivor_ptr + USED_BYTES_OFFSET) += allocated_bytes;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
       }
 
       bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im));
 
       if (during_im && allocated_bytes > 0)
       {
         uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x4e8, 8, cm));
+
         uintptr_t start = *(uintptr_t *)(alloc_region + NEXT_TOP_AT_MARK_START_OFFSET);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + NEXT_TOP_AT_MARK_START_OFFSET, 8, start));
+
         uintptr_t end = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + REGION_TOP_OFFSET, 8, end));
+
         uintptr_t root_regions_ptr = cm + 0xb0;
         uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr, 8, root_regions_array));
+
         uintptr_t idx = *(uintptr_t *)(root_regions_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr + 0x10, 8, idx));
+
         uintptr_t mem_region = root_regions_array + idx * 0x10;
+
         *(uintptr_t *)(mem_region) = start;
         *(uintptr_t *)(mem_region + 0x8) = (end - start) / OBJECT_PTR_SIZE;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region, 8, start));
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region + 0x8, 8, (end - start) / 8));
+
         *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", root_regions_ptr + 0x10, 8, idx + 1));
       }
 
       *(uintptr_t *)(region_ptr + USED_BYTES_BEFORE_OFFSET) = 0;
       *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = dummy_region;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + USED_BYTES_BEFORE_OFFSET, 8, 0));
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + ALLOC_REGION_OFFSET, 8, dummy_region));
     }
     uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
 
     if (new_alloc_region != 0)
     {
       *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + PRE_DUMMY_TOP_OFFSET, 8, 0));
+
       uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
       uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region, 8, bottom));
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region + 0x10, 8, top));
+
       *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x18, 8, top - bottom));
 
       bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + BOT_UPDATES_OFFSET, 1, bot_updates));
+
       size_t temp;
       uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
 
       *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = new_alloc_region;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + ALLOC_REGION_OFFSET, 8, new_alloc_region));
+
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + COUNT_OFFSET, 4, *(uint *)(region_ptr + COUNT_OFFSET)));
       *(uint *)(region_ptr + COUNT_OFFSET) += 1;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + COUNT_OFFSET, 4, *(uint *)(region_ptr + COUNT_OFFSET)));
 
       if (result != 0)
         *actual_word_size = desired_word_size;
@@ -4720,6 +4890,7 @@ public:
     if (dest_attr_type == 0)
     {
       uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", allocator_ptr + 0x28, 8, survivor_gc_alloc_ptr));
       region_ptr = survivor_gc_alloc_ptr + node_index * 0x48;
     }
     else if (dest_attr_type == 1)
@@ -4729,6 +4900,7 @@ public:
     }
 
     uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", region_ptr + 0x8, 8, alloc_region));
 
     if (dest_attr_type == 0)
       result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
@@ -4738,6 +4910,8 @@ public:
     if (result == 0)
     {
       uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 1, is_full_value));
+
       bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
       if (!is_full)
       {
@@ -4745,6 +4919,7 @@ public:
         uintptr_t thread = (uintptr_t)Thread::current();
         uintptr_t lock_ptr = (uintptr_t)FreeList_lock;
         *(uintptr_t *)lock_ptr = thread;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", lock_ptr, 8, thread));
         // FreeList_lock->set_owner(Thread::current());
         // MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
 
@@ -4762,9 +4937,11 @@ public:
             *(bool *)(allocator_ptr + 0x10) = true;
           else if (dest_attr_type == 1)
             *(bool *)(allocator_ptr + 0x11) = true;
+          IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11), 1, 1));
         }
         // FreeList_lock->set_owner(NULL);
         *(uintptr_t *)lock_ptr = 0;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", lock_ptr, 8, 0));
       }
     }
 
@@ -4787,6 +4964,8 @@ public:
     size_t max_size = 0x40000;
     // ResizePLAB = 1
     size_t temp = *(size_t *)(plab_stats_ptr + 0x30) / no_of_gc_workers;
+    IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_stats_ptr + 0x30, 8, temp * 1));
+
     gclab_word_size = MIN2(MAX2(temp, min_size), max_size);
 
     // AlignmentReserve=0x2 humongous_object_threshold_in_words=0x40000
@@ -4794,16 +4973,23 @@ public:
     size_t required_in_plab = word_sz + 0x2;
 
     uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x8, 8, allocator_ptr));
+
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
     if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
       uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
       uintptr_t buffer;
       buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE)));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE), 8, buffer));
 
       size_t result = 0;
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
       uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x30, 8, top_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x40, 8, hard_end_ptr));
+
       if (top_ptr < hard_end_ptr)
       {
         {
@@ -4815,29 +5001,46 @@ public:
             size_t payload_size = words - (UseCompressedClassPointers ? 2 : 3);
             size_t len = payload_size * OBJECT_PTR_SIZE / 4;
             *(int *)(start + ArrayLenOff) = len;
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + ArrayLenOff, 4, len));
 
             klass_ptr = (uintptr_t)Universe::intArrayKlassObj();
           }
           else if (words > 0)
             klass_ptr = (uintptr_t)vmClasses::Object_klass();
           *(uintptr_t *)(start + MarkWordOff) = (0x0 | 0x1);
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", start, 8, 0x1));
+
           if (UseCompressedClassPointers)
+          {
             *(uint *)(start + KlassOff) = (klass_ptr - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift();
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", start + KlassOff, 4, (uint)(klass_ptr - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift()));
+          }
           else
+          {
             *(uintptr_t *)(start + KlassOff) = klass_ptr;
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + KlassOff, 8, klass_ptr));
+          }
         }
 
         *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x38, 8, hard_end_ptr));
         size_t remaining = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
         *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x30, 8, hard_end_ptr));
         *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x28, 8, hard_end_ptr));
         result = remaining;
       }
+
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
       *(uintptr_t *)(buffer + 0x50) += result;
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
 
       //__num_plab_fills[dest.type()]++
       uintptr_t num_plab_fills = plab_allocator_ptr + 0x30;
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", num_plab_fills + dest_attr_type * 8, 8, *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE)));
       *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE) += 1;
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", num_plab_fills + dest_attr_type * 8, 8, *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE)));
 
       size_t actual_plab_size = 0;
       // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
@@ -4850,12 +5053,21 @@ public:
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
         *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
+
+        for (int i = 0x20; i < 0x40; i += 8)
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + i, 8, *(uintptr_t *)(buffer + i)));
+
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
         *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
 
         uintptr_t obj = obj_ptr;
         size_t delta = actual_plab_size - 2;
         if (delta >= word_sz)
+        {
           *(uintptr_t *)(buffer + 0x30) = obj + word_sz * OBJECT_PTR_SIZE;
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x30, 8, *(uintptr_t *)(buffer + 0x30)));
+        }
         else
           obj = 0;
         return obj;
@@ -4876,11 +5088,16 @@ public:
     {
       uint offset = *(uint *)(old + KlassOff);
       klass_ptr = (uintptr_t)CompressedKlassPointers::base() + ((uintptr_t)offset << CompressedKlassPointers::shift());
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + KlassOff, 4, offset));
     }
     else
+    {
       klass_ptr = *(uintptr_t *)(old + KlassOff);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old + KlassOff, 8, klass_ptr));
+    }
 
     uint64_t lh_kid = *(uint64_t *)(klass_ptr + LhKidOff);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", klass_ptr + LhKidOff, 8, lh_kid));
     int lh = (int)lh_kid;
     int kid = lh_kid >> 32;
     size_t size;
@@ -4891,6 +5108,7 @@ public:
     {
       // is array
       int array_length = *(int *)(old + ArrayLenOff);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + ArrayLenOff, 4, array_length));
       // lh[7:0]是log2(esz)
       // lh[23:16]是hsz
       size_t size_in_bytes = (array_length << (uint8_t)lh) + (uint8_t)(lh >> 16);
@@ -4898,6 +5116,7 @@ public:
     }
 
     int8_t region_attr_type = *(int8_t *)(region_attr_ptr + ATTR_TYPE_OFFSET);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", region_attr_ptr + ATTR_TYPE_OFFSET, 1, region_attr_type))
 
     uintptr_t dest_attr_ptr;
     uint age = 0;
@@ -4916,26 +5135,35 @@ public:
         bool has_monitor = old_mark & MONITOR_VALUE;
         uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
         uint64_t mark = *(uint64_t *)ptr;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
         age = (mark >> AGE_SHIFT) & AGE_MASK;
       }
       else
         // m.age()
         age = (old_mark >> AGE_SHIFT) & AGE_MASK;
+
       uint threshold = *(uint *)((uintptr_t)pss + 0x17c);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x17c, 4, threshold));
       if (age < threshold)
         dest_attr_ptr = region_attr_ptr;
     }
 
     uintptr_t from_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (old >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    IFDEF(TRACE, tty->print_cr("calculate address %lx %lx %x", pss->getHeapRegionBiasedBase(), old, pss->getHeapRegionShiftBy()));
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (old >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE, 8, from_region));
     // uint node_index = *(uint *)(from_region + NODE_INDEX_OFFSET);
     // @notice: single thread -> node_index always 0
     uint node_index = 0;
 
     // 5. 分配得到obj_ptr
     uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x70, 8, plab_allocator_ptr));
+
     uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
 
     int8_t dest_attr_type = *(int8_t *)(dest_attr_ptr + ATTR_TYPE_OFFSET);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", dest_attr_ptr + ATTR_TYPE_OFFSET, 1, dest_attr_type));
+
     uintptr_t buffer;
     // if (dest_attr_type == TYPE_YOUNG)
     //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][node_index];
@@ -4943,15 +5171,20 @@ public:
     // else
     //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][0];
     //   buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE)));
     buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE), 8, buffer));
 
     uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
     uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, region_top));
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, region_end));
     uintptr_t obj_ptr;
     if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
     {
       obj_ptr = region_top;
       *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", buffer + 0x30, 8, region_top + size * 8));
     }
     else
       obj_ptr = 0;
@@ -4966,13 +5199,18 @@ public:
         bool plab_refill_in_old_failed = false;
 
         // plab_allocate
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + 1 * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE)));
         buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE));
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE), 8, buffer));
         uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
         uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, region_top));
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, region_end));
         if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
         {
           obj_ptr = region_top;
           *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", buffer + 0x30, 8, region_top + size * 8));
         }
         else
         {
@@ -4984,6 +5222,7 @@ public:
 
         // 这里会对后面的dest_attr有影响
         *(int8_t *)(dest_attr_ptr + 1) = 1;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", dest_attr_ptr + ATTR_TYPE_OFFSET, 1, 1));
         dest_attr_type = 1;
       }
     }
@@ -4991,12 +5230,17 @@ public:
     uintptr_t forward_ptr = 0;
     uintptr_t m = (obj_ptr & ~LOCK_MASK_IN_PLACE) | MARKED_VALUE;
     *(uintptr_t *)(old + MarkWordOff) = m;
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", old, 8, m));
     forward_ptr = 0;
 
     {
       const uint young_index = *(uint *)(from_region + YOUND_INDEX_IN_CSET_OFFSET);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", from_region + 0x100, 4, young_index));
       uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1d0, 8, young_words_base));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
       *((size_t *)young_words_base + young_index) += size;
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
     }
 
     // upadte age
@@ -5009,17 +5253,24 @@ public:
         bool has_monitor = old_mark & MONITOR_VALUE;
         uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
         uint64_t mark = *(uint64_t *)ptr;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
         *(uint64_t *)ptr = (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", ptr, 8, (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT)));
       }
       else
         new_mark = (old_mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & AGE_MASK) << AGE_SHIFT);
     }
     *(uint64_t *)(obj_ptr + MarkWordOff) = new_mark;
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", obj_ptr, 8, new_mark));
 
     // 不重叠区域的复制
     // Copy::disjoint_words((HeapWord *)src, (HeapWord *)obj_ptr, size);
     for (size_t i = 1; i < size; ++i)
+    {
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old + i * 8, 8, *(uintptr_t *)(old + i * OBJECT_PTR_SIZE)));
       *(uintptr_t *)(obj_ptr + i * OBJECT_PTR_SIZE) = *(uintptr_t *)(old + i * OBJECT_PTR_SIZE);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", obj_ptr + i * 8, 8, *(uintptr_t *)(old + i * OBJECT_PTR_SIZE)));
+    }
 
     uintptr_t scanning_in_young = dest_attr_type == ATTR_TYPE_YOUNG;
     // obj_array trace
@@ -5028,9 +5279,14 @@ public:
       if (kid == ObjectArrayKlassID)
       {
         int array_length = *(int *)(old + ArrayLenOff);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + ArrayLenOff, 4, array_length));
+
         int chunk_size = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET, 4, chunk_size));
+
         int end = array_length % chunk_size;
         *(int *)(obj_ptr + ArrayLenOff) = end;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", obj_ptr + ArrayLenOff, 4, end));
 
         uint step_index = end;
         uint step_ncreate = array_length > end ? 1u : 0u;
@@ -5048,6 +5304,7 @@ public:
 
           uintptr_t base = pss->getTaskQueueElemsBase();
           *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = old + PartialArrayTag;
+
           localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
           *(uint *)bottom_addr = localBot;
         }
@@ -5073,7 +5330,12 @@ public:
     // oop_trace
     int vtable_len = *(int *)(klass_ptr + VTableLenOff);
     int itable_len = *(int *)(klass_ptr + ITableLenOff);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + VTableLenOff, 4, vtable_len));
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + ITableLenOff, 4, itable_len));
+
     int nonStaticOopMapSize = *(int *)(klass_ptr + NonstaticOopMapSizeOff);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + NonstaticOopMapSizeOff, 4, nonStaticOopMapSize));
+
     uintptr_t start_map = (uintptr_t)((uintptr_t *)(klass_ptr + VTableOff) + vtable_len + itable_len);
     uintptr_t end_map = start_map + nonStaticOopMapSize * OBJECT_PTR_SIZE;
     while (start_map < end_map)
@@ -5081,6 +5343,8 @@ public:
       end_map -= OBJECT_PTR_SIZE;
       int offset = *(int *)(end_map);
       int count = *(int *)(end_map + 0x4);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", end_map, 8, *(uintptr_t *)end_map));
+
       uintptr_t start = obj_ptr + offset;
       uintptr_t end = start + count * (UseCompressedOops ? 4 : 8);
       while (start < end)
@@ -5095,7 +5359,10 @@ public:
     {
       uintptr_t static_start = obj_ptr + StaticFieldOff;
       uint staticCount = *(uint *)(old + staticOopFieldCountOff);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + 40, 4, staticCount));
+
       uintptr_t static_end = static_start + staticCount * (UseCompressedOops ? 4 : 8);
+
       while (static_start < static_end)
       {
         do_oop_work(static_start - obj_ptr + old, static_start, scanning_in_young, pss);
@@ -5133,6 +5400,8 @@ public:
   {
     uintptr_t obj;
     uintptr_t offset = *(uintptr_t *)task;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", task, 8, offset));
+
     if (UseCompressedOops)
     {
       offset = (uint32_t)offset;
@@ -5140,6 +5409,7 @@ public:
         obj = 0;
       else
         obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)offset << CompressedOops::shift());
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate compressed oop obj %lx %lx %x to get %lx", (uintptr_t)CompressedOops::base(), (uintptr_t)offset, CompressedOops::shift(), obj));
     }
     else
       obj = offset;
@@ -5149,8 +5419,11 @@ public:
 
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
 
     uintptr_t m_value = *(uintptr_t *)(obj + MarkWordOff);
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", obj, 8, m_value));
+
     // m.is_marked
     if ((m_value & LOCK_MASK_IN_PLACE) == MARKED_VALUE)
     {
@@ -5165,18 +5438,28 @@ public:
     {
       uintptr_t writeObj = (obj - (uintptr_t)CompressedOops::base()) >> CompressedOops::shift();
       *(uint32_t *)task = writeObj;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to write %lx", task, 4, writeObj));
     }
     else
+    {
       *(uintptr_t *)task = obj;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to write %lx", task, 8, obj));
+    }
 
     if (((task ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
       return;
 
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (task >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    IFDEF(TRACE, tty->print_cr("calculate address %lx %lx %x", pss->getHeapRegionBiasedBase(), task, pss->getHeapRegionShiftBy()));
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (task >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE, 8, heap_region));
     bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+
     if (!typeIsYoung)
     {
       region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
+      IFDEF(TRACE, tty->print_cr("calculate address %lx %lx %x", regionAttrBiasedBase, obj, regionAttrShiftBy));
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
       aop_work_enqueue_card(region_attr_ptr, task, pss);
     }
   }
@@ -5185,15 +5468,22 @@ public:
   {
     uintptr_t from_obj = src;
     uintptr_t m_value = *(uintptr_t *)from_obj;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", from_obj, 8, m_value));
+
     uintptr_t clear_lock_bits = m_value & ~LOCK_MASK_IN_PLACE;
     uintptr_t to_obj = clear_lock_bits;
 
     int array_length = *(int *)(from_obj + ArrayLenOff);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", from_obj + ArrayLenOff, 4, array_length));
+
     //@notice: to_obj 和 array_length 是不一样的 这里不能复用之前的array_length
     int start = *(int *)(to_obj + ArrayLenOff);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", to_obj + ArrayLenOff, 4, start));
+
     int chunk_size = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
     //@notice: this can parrel excute
     *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to write %x", to_obj + ArrayLenOff, 4, start + chunk_size));
 
     uint task_num = start / chunk_size;
     uint remaining_tasks = (array_length - start) / chunk_size;
@@ -5210,16 +5500,23 @@ public:
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       uint localBot = *(uint *)bottom_addr;
       uint age_top = *(uint *)age_top_addr;
+
       uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
       assert(dirty_n_elems < (TASKQUEUE_SIZE - 2), "taskqueue full");
       uintptr_t base = pss->getTaskQueueElemsBase();
       *(uintptr_t *)(base + localBot * SCANNER_TASK_SIZE) = from_obj + PartialArrayTag;
+
       localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
       *(uint *)bottom_addr = localBot;
     }
 
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE);
+    IFDEF(TRACE, tty->print_cr("calculate address %lx %lx %x", pss->getHeapRegionBiasedBase(), to_obj, pss->getHeapRegionShiftBy()));
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * OBJECT_PTR_SIZE, 8, heap_region));
+
     bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+
     uintptr_t scanning_in_young = typeIsYoung;
 
     uintptr_t low = to_obj + ArrayElementOff + start * (UseCompressedOops ? 4 : 8);
@@ -5239,302 +5536,11 @@ public:
 
   void dispatch_task(uintptr_t task, G1ParScanThreadState *pss)
   {
+    IFDEF(TRACE, tty->print_cr("dispatch task %lx", task));
     if ((task & 0x3) == 0x2)
       do_partial_array(task - 0x2, pss);
     else
       do_oop_evac(task - (task & 0x3), pss);
-  }
-
-  void printOthers(G1ParScanThreadState *pss)
-  {
-    log_info(gc, task)("G1ParScanThreadState content:");
-    for (uint i = 0; i < (uint)sizeof(G1ParScanThreadState) / 8; ++i)
-      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)((uintptr_t)pss + i * 8));
-
-    log_info(gc, task)("HeapRegion Array Content Bias ShiftBy");
-    uintptr_t biasedbase = pss->getHeapRegionBiasedBase();
-    uintptr_t base = pss->getHeapRegionBase();
-    log_info(gc, task)("heap region base:%lx, biased-base:%lx, bias:%x, shift-by:%x, length:%x", base, biasedbase, pss->getHeapRegionBias(), pss->getHeapRegionShiftBy(), pss->getHeapRegionLength());
-    for (uint i = 0; i < pss->getHeapRegionLength(); ++i)
-    {
-      log_info(gc, task)("%d heap region array content:", i);
-      uintptr_t heap_region = *(uintptr_t *)(base + i * 8);
-      if (heap_region != 0)
-        for (int j = 0; j < (int)sizeof(HeapRegion) / 8; ++j)
-          log_info(gc, task)("offset-%d(%x): %lx", j, j, *(uint64_t *)(heap_region + j * 8));
-    }
-
-    log_info(gc, task)("HeapRegionAttr Array Content Bias ShiftBy");
-    biasedbase = pss->getRegionAttrBiasedBase();
-    base = pss->getRegionAttrBase();
-    log_info(gc, task)("region attr base:%lx, biased-base:%lx, bias:%x, shift-by:%x, length:%x", base, biasedbase, pss->getRegionAttrBias(), pss->getRegionAttrShiftBy(), pss->getRegionAttrLength());
-    for (uint i = 0; i < pss->getRegionAttrLength(); ++i)
-    {
-      log_info(gc, task)("%d region attr array content:", i);
-      uintptr_t region_attr_ptr = base + i * ATTR_SIZE;
-      for (int j = 0; j < ATTR_SIZE; ++j)
-        log_info(gc, task)("offset-%d(%x): %x", j, j, *(char *)(region_attr_ptr + j));
-    }
-    //@todo: plab_allocator plab_buffer
-
-    log_info(gc, task)("HumongousReclaimCandidatesBool Array");
-    base = _g1h->getHumongousReclaimCandidatesBoolBase();
-    for (uint i = 0; i < (uint)_g1h->getHumongousReclaimCandidatesBoolLength(); ++i)
-      log_info(gc, task)("offset-%d(%x): %x", i, i, *(bool *)(base + i));
-
-    log_info(gc, task)("CardTable Content:");
-    uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
-    for (uint i = 0; i < sizeof(G1CardTable) / 8; ++i)
-      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)(ct_ptr + i * 8));
-
-    log_info(gc, task)("PtrQueue buffer:");
-    uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
-    uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
-    uintptr_t buffer = *(uintptr_t *)(queue_ptr + 0x10);
-    size_t index = *(uintptr_t *)(queue_ptr);
-    size_t capacity = *(uintptr_t *)(queue_ptr + 0x8);
-    log_info(gc, task)("ptrqueue buffer is %lx", buffer);
-    log_info(gc, task)("ptrqueue buffer index is %lx", index);
-    log_info(gc, task)("ptrqueue buffer capacity is %lx", capacity);
-    if (buffer != 0)
-      for (uint i = index / 8 + 1; i < capacity / 8; ++i)
-        log_info(gc, task)("content %d : %lx", i, *(uintptr_t *)(buffer + i * 8));
-
-    log_info(gc, task)("PLAB Allocator:");
-    uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
-    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
-    for (uint i = 0; i < 2; ++i)
-    {
-      uintptr_t buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + i * OBJECT_PTR_SIZE));
-      log_info(gc, task)("PLAB Content:");
-      for (uint j = 0; j < sizeof(PLAB) / 8; ++j)
-        log_info(gc, task)("offset-%d(%x): %lx", j, j, *(uint64_t *)(buffer + j * 8));
-    }
-
-    log_info(gc, task)("PSS 0x1d0 Young Words Array");
-    uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
-    size_t length = *(uintptr_t *)((uintptr_t)pss + 0x1e0);
-    log_info(gc, task)("array base is %lx length is %lx", young_words_base, length);
-    for (uint i = 0; i < (uint)length; ++i)
-      log_info(gc, task)("offset-%d(%x): %lx", i, i, *(uint64_t *)(young_words_base + i * 8));
-  }
-
-  void traverseOopDesc(uintptr_t task)
-  {
-    // 使用固定大小的栈分配数组跟踪已访问对象
-    const int MAX_VISITED = 1000000;
-    static thread_local uintptr_t visited_oops[MAX_VISITED];
-    static thread_local int visited_count = 0;
-    // 添加递归深度限制，防止栈溢出
-    static thread_local int recursion_depth = 0;
-    const int MAX_RECURSION_DEPTH = 150;
-
-    if (recursion_depth == 0)
-      visited_count = 0;
-
-    if (recursion_depth >= MAX_RECURSION_DEPTH)
-    {
-      log_info(gc, task)("Max recursion depth reached, stopping traversal");
-      return;
-    }
-
-    ++recursion_depth;
-
-    uintptr_t this_oop = *(uintptr_t *)task;
-    if (this_oop == 0)
-    {
-      log_info(gc, task)("Invalid oop: %lx", this_oop);
-      recursion_depth--;
-      return;
-    }
-    log_info(gc, task)("The task %lx content oop ptr %lx", task, this_oop);
-
-    // 检测循环引用
-    for (int i = 0; i < visited_count; i++)
-    {
-      if (visited_oops[i] == this_oop)
-      {
-        log_info(gc, task)("Cycle detected: object %lx already visited, skipping", this_oop);
-        recursion_depth--;
-        return;
-      }
-    }
-
-    // 标记为已访问
-    if (visited_count < MAX_VISITED)
-      visited_oops[visited_count++] = this_oop;
-    else
-      log_info(gc, task)("Warning: visited set full, cannot track more cycles");
-
-    uintptr_t markWord = *(uintptr_t *)this_oop;
-    log_info(gc, task)("The markWord is %lx", markWord);
-
-    if (markWord & UNLOCKED_VALUE == 0x0)
-    {
-      bool has_monitor = markWord & MONITOR_VALUE;
-      uint64_t ptr = has_monitor ? markWord ^ MONITOR_VALUE : markWord;
-      uint64_t mark = *(uint64_t *)ptr;
-      log_info(gc, task)("The locked and monitor markWord is %lx", mark);
-    }
-
-    uintptr_t klass_ptr = *(uintptr_t *)(this_oop + 8);
-    log_info(gc, task)("The klass_ptr is %lx", klass_ptr);
-
-    if (klass_ptr == 0)
-    {
-      log_info(gc, task)("Invalid klass_ptr: %lx, stopping traversal", klass_ptr);
-      recursion_depth--;
-      return;
-    }
-
-    uint64_t lh_kid = *(uint64_t *)(klass_ptr + 8);
-    int lh = (int)lh_kid;
-    int kid = lh_kid >> 32;
-    size_t size;
-    if (lh > 0)
-      size = lh >> LogHeapWordSize;
-    else if (lh < 0)
-    {
-      // is array
-      int array_length = *(int *)(this_oop + 16);
-      // lh[7:0]是log2(esz)
-      // lh[23:16]是hsz
-      size_t size_in_bytes = (array_length << (uint8_t)lh) + (uint8_t)(lh >> 16);
-      size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
-    }
-
-    if (kid == 0)
-      log_info(gc, task)("This is common instance %lx: ", this_oop);
-    else if (kid == 1)
-      log_info(gc, task)("This is ref instance %lx: ", this_oop);
-    else if (kid == 2)
-      log_info(gc, task)("This is mirror instance %lx: ", this_oop);
-    else if (kid == 3)
-      log_info(gc, task)("This is class loader instance %lx: ", this_oop);
-    else if (kid == 4)
-      log_info(gc, task)("This is type array instance %lx: ", this_oop);
-    else if (kid == 5)
-      log_info(gc, task)("This is object array instance %lx: ", this_oop);
-
-    tty->printContent(this_oop, size);
-
-    log_info(gc, task)("Print Klass");
-    log_info(gc, task)("content0(off-8) : %lx", *(uintptr_t *)(klass_ptr + 8));
-    log_info(gc, task)("content1(off-160): %lx", *(uintptr_t *)(klass_ptr + 160));
-    log_info(gc, task)("content3(off-296): %lx", *(uintptr_t *)(klass_ptr + 296));
-
-    if (kid == 5)
-    {
-      int array_length = *(int *)(this_oop + 16);
-      uintptr_t low = this_oop + 24;
-      uintptr_t high = low + array_length * 8;
-      while (low < high)
-      {
-        log_info(gc, task)("child oop index %lx, offset %lx", low, low - this_oop);
-        traverseOopDesc(low);
-        low += 8;
-      }
-    }
-    else if (kid != 4)
-    {
-      log_info(gc, task)("Print OopMap");
-
-      // oop_trace
-      int vtable_len = *(int *)(klass_ptr + 160);
-      int itable_len = *(int *)(klass_ptr + 300);
-      int nonStaticOopMapSize = *(int *)(klass_ptr + 296);
-      uintptr_t start_map = (uintptr_t)((uintptr_t *)(klass_ptr + 464) + vtable_len + itable_len);
-      uintptr_t end_map = start_map + nonStaticOopMapSize * 8;
-      while (start_map < end_map)
-      {
-        end_map -= 8;
-        int offset = *(int *)(end_map);
-        int count = *(int *)(end_map + 0x4);
-        log_info(gc, task)("offset %x count %x", offset, count);
-
-        uintptr_t start = this_oop + offset;
-        uintptr_t end = start + count * 8;
-        while (start < end)
-        {
-          end -= 8;
-          log_info(gc, task)("child oop index %lx, offset is %lx", end, end - this_oop);
-          traverseOopDesc(end);
-        }
-      }
-
-      if (kid == 1)
-      {
-        uintptr_t index = this_oop + 40;
-        log_info(gc, task)("child oop index %lx, offset is %x", index, 40);
-        traverseOopDesc(index);
-
-        index = this_oop + 16;
-        log_info(gc, task)("child oop index %lx, offset is %x", index, 16);
-        traverseOopDesc(index);
-      }
-      if (kid == 2)
-      {
-        uintptr_t static_start = this_oop + 184;
-        uint staticCount = *(uint *)(this_oop + 40);
-        uintptr_t static_end = static_start + staticCount * 8;
-        while (static_start < static_end)
-        {
-          log_info(gc, task)("child oop index %lx, offset is %lx", static_start, static_start - this_oop);
-          traverseOopDesc(static_start);
-          static_start += 8;
-        }
-      }
-    }
-    --recursion_depth;
-
-    // 如果返回到顶层，清空访问表
-    if (recursion_depth == 0)
-      visited_count = 0;
-  }
-
-  void traversePartialArray(uintptr_t task, int chunk_size)
-  {
-    uintptr_t from_obj = task;
-    log_info(gc, task)("Partial Array Src OopDesc ptr is %lx", from_obj);
-
-    uintptr_t m_value = *(uintptr_t *)from_obj;
-    uintptr_t clear_lock_bits = m_value & ~0x3;
-    uintptr_t to_obj = clear_lock_bits;
-    log_info(gc, task)("Partial Array Dest OopDesc ptr is %lx", to_obj);
-
-    int array_length = *(int *)(from_obj + 0x10);
-    int start = *(int *)(to_obj + 0x10);
-    log_info(gc, task)("Partial Array Src Length is %x", array_length);
-    log_info(gc, task)("Partial Array Src Length is %x", start);
-
-    uintptr_t klass_1 = *(uintptr_t *)(from_obj + 0x8);
-    uintptr_t klass_2 = *(uintptr_t *)(to_obj + 0x8);
-    if (klass_1 != 0)
-      log_info(gc, task)("Partial Array Klass lh kid is %lx", *(uintptr_t *)(klass_1 + 0x8));
-    if (klass_2 != 0)
-      log_info(gc, task)("Partial Array Klass lh kid is %lx", *(uintptr_t *)(klass_2 + 0x8));
-
-    log_info(gc, task)("Print Src Partial Array");
-    tty->printContent(from_obj, array_length + 3);
-    log_info(gc, task)("Print Dest Partial Array");
-    tty->printContent(from_obj, array_length + 3);
-
-    uintptr_t low = to_obj + 0x18 + start * 0x8;
-    uintptr_t high = to_obj + 0x18 + (start + chunk_size) * 0x8;
-    uintptr_t p = to_obj + 0x18;
-    uintptr_t q = p + (start + chunk_size) * 0x8;
-    if (p < low)
-      p = low;
-    if (q > high)
-      q = high;
-    while (p < q)
-    {
-      log_info(gc, task)("Dest Partial Array child index %lx offset %lx", p, p - to_obj);
-      traverseOopDesc(p);
-      log_info(gc, task)("Dest Partial Array child index %lx offset %lx", p - to_obj + from_obj, p - to_obj);
-      traverseOopDesc(p - to_obj + from_obj);
-      p += 0x8;
-    }
   }
 
   void work(uint worker_id)
@@ -5549,9 +5555,6 @@ public:
 
       scan_roots(pss, worker_id);
 
-      // @notice: print other objects
-      // printOthers(pss);
-
       // @notice: 可以插在这里进行HWGC工作 也就是evacuate_live_objects的功能卸载到硬件去做
       // 取任务需要的参数
       uintptr_t elems = pss->getTaskQueueElemsBase();
@@ -5559,31 +5562,14 @@ public:
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
 
       // @notice: print task
+#ifdef TRACE
       uint localBot = *(uint *)(bottom_addr);
       uint ageTop = *(uint *)(age_top_addr);
-
-      bool tag = false; // 决定是否需要分发处理该task
-      // do
-      //{
-      //   uintptr_t task;
-      //   uint dirty_n_elems = (localBot - ageTop) & (TASKQUEUE_SIZE - 1);
-      //   if (dirty_n_elems <= 0)
-      //     tag = false;
-      //   else
-      //   {
-      //     localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-      //     task = *(uintptr_t *)(elems + localBot * 8);
-      //     tag = true;
-      //   }
-      //   if (tag)
-      //   {
-      //     int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
-      //     if ((task & 0x3) == 0x0)
-      //       traverseOopDesc(task);
-      //     else if ((task & 0x3) == 0x2)
-      //       traversePartialArray(task - 0x2, chunk_size);
-      //   }
-      // } while (tag);
+      tty->print_cr("work: access %lx (%x bytes) to get %x", bottom_addr, 4, *(uint *)(bottom_addr));
+      tty->print_cr("work: access %lx (%x bytes) to get %x", age_top_addr, 4, *(uint *)(age_top_addr));
+      for (int i = localBot - 1; i >= 0; --i)
+        IFDEF(TRACE, tty->print_cr("work: access %lx (%x bytes) to get %lx", elems + i * 8, 8, *(uintptr_t *)(elems + i * 8)));
+#endif
 
       int fd = open("/dev/hwgc", O_RDWR);
       struct HWGCParameter
@@ -5667,117 +5653,155 @@ public:
       par.useCompressedOops = UseCompressedOops;
       par.useCompressedKlassPointers = UseCompressedClassPointers;
       Ticks start = Ticks::now();
+
+#ifdef TRACE
+      tty->print_cr("=== Dumping 'par' struct ===");
+      tty->print_cr("par.chunkSize = %d", par.chunkSize);
+      tty->print_cr("par.ageThreshold = %u", par.ageThreshold);
+      tty->print_cr("par.heapRegionBias = %u", par.heapRegionBias);
+      tty->print_cr("par.regionAttrShiftBy = %u", par.regionAttrShiftBy);
+      tty->print_cr("par.heapRegionShiftBy = %u", par.heapRegionShiftBy);
+      tty->print_cr("par.logOfHRGrainBytes = %d", par.logOfHRGrainBytes);
+      tty->print_cr("par.stepperOffset = " UINT64_FORMAT, par.stepperOffset);
+      tty->print_cr("par.youngWordsBase = " PTR_FORMAT, par.youngWordsBase);
+      tty->print_cr("par.regionAttrBase = " PTR_FORMAT, par.regionAttrBase);
+      tty->print_cr("par.plabAllocatorPtr = " PTR_FORMAT, par.plabAllocatorPtr);
+      tty->print_cr("par.regionAttrBiasedBase = " PTR_FORMAT, par.regionAttrBiasedBase);
+      tty->print_cr("par.heapRegionBiasedBase = " PTR_FORMAT, par.heapRegionBiasedBase);
+      tty->print_cr("par.parScanThreadStatePtr = " PTR_FORMAT, par.parScanThreadStatePtr);
+      tty->print_cr("par.taskQueueBottomAddr = " PTR_FORMAT, par.taskQueueBottomAddr);
+      tty->print_cr("par.taskQueueElemsBase = " PTR_FORMAT, par.taskQueueElemsBase);
+      tty->print_cr("par.humogousReclaimCandidateBoolBase = " PTR_FORMAT, par.humogousReclaimCandidateBoolBase);
+      tty->print_cr("par.cardTablePtr = " PTR_FORMAT, par.cardTablePtr);
+      tty->print_cr("par.g1h = " PTR_FORMAT, par.g1h);
+      tty->print_cr("par.intArrayKlass = " PTR_FORMAT, par.intArrayKlass);
+      tty->print_cr("par.objectKlass = " PTR_FORMAT, par.objectKlass);
+      tty->print_cr("par.lockPtr = " PTR_FORMAT, par.lockPtr);
+      tty->print_cr("par.thread = " PTR_FORMAT, par.thread);
+      tty->print_cr("par.dummyRegion = " PTR_FORMAT, par.dummyRegion);
+      tty->print_cr("par.numaPtr = " PTR_FORMAT, par.numaPtr);
+      tty->print_cr("par.compressedOopBase = " PTR_FORMAT, par.compressedOopBase);
+      tty->print_cr("par.compressedKlassPointerBase = " PTR_FORMAT, par.compressedKlassPointerBase);
+      tty->print_cr("par.compressedOopShift = %d", par.compressedOopShift);
+      tty->print_cr("par.compressedKlassPointerShift = %d", par.compressedKlassPointerShift);
+      tty->print_cr("par.useCompressedOops = %d", par.useCompressedOops);
+      tty->print_cr("par.useCompressedKlassPointers = %d", par.useCompressedKlassPointers);
+      tty->print_cr("=== End of 'par' dump ===");
+#endif
+
       tty->print_cr("work start");
-      ioctl(fd, HWGC_IOC_START, &par);
-      while (1)
-      {
-        ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
-        if (state == HWGC_DONE)
-        {
-          Ticks end = Ticks::now();
-          jlong nanos = (end - start).nanoseconds();
-          tty->print_cr("work done, time is %ld ns", nanos);
-          break;
-        }
-        if (state == HWGC_WAIT_ENQUEUED)
-        {
-          lseek(fd, 0xe0, SEEK_SET);
-          uint64_t allocator_ptr, buffer = 0;
-          read(fd, &allocator_ptr, sizeof(allocator_ptr));
-          buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
-        }
-        if (state == HWGC_WAIT_MALLOC)
-        {
-          lseek(fd, 0xe0, SEEK_SET);
+      // ioctl(fd, HWGC_IOC_START, &par);
+      // while (1)
+      //{
+      //   ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+      //   if (state == HWGC_DONE)
+      //   {
+      //     Ticks end = Ticks::now();
+      //     jlong nanos = (end - start).nanoseconds();
+      //     tty->print_cr("work done, time is %ld ns", nanos);
+      //     break;
+      //   }
+      //   if (state == HWGC_WAIT_ENQUEUED)
+      //   {
+      //     lseek(fd, 0xe0, SEEK_SET);
+      //     uint64_t allocator_ptr, buffer = 0;
+      //     read(fd, &allocator_ptr, sizeof(allocator_ptr));
+      //     buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
+      //     ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
+      //   }
+      //   if (state == HWGC_WAIT_MALLOC)
+      //   {
+      //     lseek(fd, 0xe0, SEEK_SET);
 
-          uintptr_t grow_array_ptr, len;
-          read(fd, &grow_array_ptr, 8);
-          read(fd, &len, 4);
-          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
-        }
-        if (state == HWGC_WAIT_PAGEFAULT)
-        {
-          lseek(fd, 0xe0, SEEK_SET);
-          uintptr_t vaddr, data, write, size;
-          read(fd, &vaddr, sizeof(vaddr));
-          read(fd, &data, sizeof(data));
-          read(fd, &write, sizeof(write));
-          read(fd, &size, sizeof(size));
-          if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
-            tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+      //    uintptr_t grow_array_ptr, len;
+      //    read(fd, &grow_array_ptr, 8);
+      //    read(fd, &len, 4);
+      //    ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
+      //  }
+      //  if (state == HWGC_WAIT_PAGEFAULT)
+      //  {
+      //    lseek(fd, 0xe0, SEEK_SET);
+      //    uintptr_t vaddr, data, write, size;
+      //    read(fd, &vaddr, sizeof(vaddr));
+      //    read(fd, &data, sizeof(data));
+      //    read(fd, &write, sizeof(write));
+      //    read(fd, &size, sizeof(size));
+      //    if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+      //      tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
 
-          uint64_t return_value = 0;
-          if (write)
-            memcpy((void *)vaddr, &data, size);
-          else
-            memcpy(&return_value, (void *)vaddr, size);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
-        }
-        if (state == HWGC_DEBUG)
-        {
-          lseek(fd, 0xe0, SEEK_SET);
+      //    uint64_t return_value = 0;
+      //    if (write)
+      //      memcpy((void *)vaddr, &data, size);
+      //    else
+      //      memcpy(&return_value, (void *)vaddr, size);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+      //  }
+      //  if (state == HWGC_DEBUG)
+      //  {
+      //    lseek(fd, 0xe0, SEEK_SET);
 
-          // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
-          // read(fd, &dest_attr_type, 8);
-          // read(fd, &min_word_size, 8);
-          // read(fd, &desired_word_size, 8);
-          // read(fd, &allocator_ptr, 8);
-          // uintptr_t temp;
-          // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
-          // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-          // uintptr_t region_ptr, desired_word_size;
-          // read(fd, &region_ptr, 8);
-          // read(fd, &desired_word_size, 8);
-          // uintptr_t temp;
-          //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
-          //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-          // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //    // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+      //    // read(fd, &dest_attr_type, 8);
+      //    // read(fd, &min_word_size, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &allocator_ptr, 8);
+      //    // uintptr_t temp;
+      //    // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+      //    // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+      //    // uintptr_t region_ptr, desired_word_size;
+      //    // read(fd, &region_ptr, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // uintptr_t temp;
+      //    //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+      //    //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-          // uintptr_t desired_word_size, heap_region_type, node_index;
-          // read(fd, &desired_word_size, 8);
-          // read(fd, &heap_region_type, 8);
-          // read(fd, &node_index, 8);
-          // size_t temp;
-          // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
-          // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //    // uintptr_t desired_word_size, heap_region_type, node_index;
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &heap_region_type, 8);
+      //    // read(fd, &node_index, 8);
+      //    // size_t temp;
+      //    // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
 
-          uintptr_t node_index;
-          read(fd, &node_index, 8);
-          uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
-          ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-        }
-      }
-      close(fd);
+      //    uintptr_t node_index;
+      //    read(fd, &node_index, 8);
+      //    uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //  }
+      //}
+      // close(fd);
 
       //@notice : do task
-      // tag = false; // 决定是否需要分发处理该task
-      // do
-      //{
-      //  uintptr_t task;
-      //  uint localBot = *(uint *)(bottom_addr);
-      //  uint age_top = *(uint *)(age_top_addr);
-      //  uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
-      //  if (dirty_n_elems <= 0)
-      //    tag = false;
-      //  else
-      //  {
-      //    localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-      //    *(uint *)(bottom_addr) = localBot;
-      //    // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
-      //    task = *(uintptr_t *)(elems + localBot * 8);
-      //    tag = true;
-      //  }
-      //  if (tag)
-      //    dispatch_task(task, pss);
-      //} while (tag);
+      bool tag = false; // 决定是否需要分发处理该task
+      do
+      {
+        uintptr_t task;
+        uint localBot = *(uint *)(bottom_addr);
+        uint age_top = *(uint *)(age_top_addr);
+
+        uint dirty_n_elems = (localBot - age_top) & (TASKQUEUE_SIZE - 1);
+        if (dirty_n_elems <= 0)
+          tag = false;
+        else
+        {
+          localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
+          *(uint *)(bottom_addr) = localBot;
+          // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
+          task = *(uintptr_t *)(elems + localBot * 8);
+          tag = true;
+        }
+        if (tag)
+          dispatch_task(task, pss);
+      } while (tag);
       // evacuate_live_objects(pss, worker_id);
-      // Ticks end = Ticks::now();
-      // jlong nanos = (end - start).nanoseconds();
-      // tty->print_cr("soft work done, time is %ld ns", nanos);
+      Ticks end = Ticks::now();
+      jlong nanos = (end - start).nanoseconds();
+      tty->print_cr("soft work done, time is %.3f ns", nanos / 1000000.0);
+      fflush(stdout);
     }
 
     end_work(worker_id);
