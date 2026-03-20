@@ -4018,6 +4018,8 @@ protected:
   TaskTerminator _terminator;
   uint _num_workers;
   uint localBot;
+  bool destAttrCache_valid;
+  uint dest_attr_cache;
 
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
@@ -5079,7 +5081,7 @@ public:
     return obj;
   }
 
-  uintptr_t do_copy_to_survivor_space(uintptr_t region_attr_ptr, uintptr_t old, uintptr_t old_mark, G1ParScanThreadState *pss)
+  uintptr_t do_copy_to_survivor_space(uintptr_t region_attr_ptr, int8_t src_region_attr_type, uintptr_t old, uintptr_t old_mark, G1ParScanThreadState *pss)
   {
     uintptr_t klass_ptr;
     if (UseCompressedClassPointers)
@@ -5113,18 +5115,15 @@ public:
       size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
     }
 
-    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + ATTR_TYPE_OFFSET);
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", region_attr_ptr + ATTR_TYPE_OFFSET, 1, region_attr_type))
-
     uintptr_t dest_attr_ptr;
     uint age = 0;
 
     // 默认目标：根据 region_attr_type 计算
     uintptr_t dest_ptr = (uintptr_t)pss + 0x178;
-    dest_attr_ptr = dest_ptr + region_attr_type * ATTR_SIZE;
+    dest_attr_ptr = dest_ptr + src_region_attr_type * ATTR_SIZE;
 
     // 计算age
-    if (region_attr_type == ATTR_TYPE_YOUNG)
+    if (src_region_attr_type == ATTR_TYPE_YOUNG)
     {
       // m.has_displaced_mark_helper
       if ((old_mark & UNLOCKED_VALUE) == 0x0)
@@ -5159,8 +5158,18 @@ public:
 
     uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
 
-    int8_t dest_attr_type = *(int8_t *)(dest_attr_ptr + ATTR_TYPE_OFFSET);
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", dest_attr_ptr + ATTR_TYPE_OFFSET, 1, dest_attr_type));
+    int8_t dest_attr_type;
+    if (dest_attr_ptr == region_attr_ptr)
+      dest_attr_type = src_region_attr_type;
+    else if (!destAttrCache_valid)
+    {
+      destAttrCache_valid = true;
+      dest_attr_cache = *(uint *)dest_ptr;
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", dest_ptr, 4, dest_attr_cache));
+      dest_attr_type = src_region_attr_type ? (int8_t)(dest_attr_cache >> 24) : (int8_t)(dest_attr_cache >> 8);
+    }
+    else
+      dest_attr_type = src_region_attr_type ? (int8_t)(dest_attr_cache >> 24) : (int8_t)(dest_attr_cache >> 8);
 
     uintptr_t buffer;
     // if (dest_attr_type == TYPE_YOUNG)
@@ -5417,6 +5426,7 @@ public:
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
     IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
     int8_t src_region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr + ATTR_TYPE_OFFSET, 1, src_region_attr_type))
     if (src_region_attr_type < 0)
       return;
 
@@ -5431,7 +5441,7 @@ public:
     }
     else
       // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr, (oop)obj, markWord(m_value));
-      obj = do_copy_to_survivor_space(region_attr_ptr, obj, m_value, pss);
+      obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr_type, obj, m_value, pss);
 
     if (UseCompressedOops)
     {
