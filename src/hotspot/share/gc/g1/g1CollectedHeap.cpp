@@ -5416,6 +5416,9 @@ public:
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * ATTR_SIZE;
     IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
+    int8_t src_region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+    if (src_region_attr_type < 0)
+      return;
 
     uintptr_t m_value = *(uintptr_t *)(obj + MarkWordOff);
     IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", obj, 8, m_value));
