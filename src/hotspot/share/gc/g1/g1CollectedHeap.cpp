@@ -4020,6 +4020,11 @@ protected:
   uint localBot;
   bool destAttrCache_valid;
   uint dest_attr_cache;
+  bool bufferCache_valid[2];
+  uintptr_t buffer_cache[2];
+  bool plabCache_valid[2];
+  uintptr_t region_top_cache[2];
+  uintptr_t region_end_cache[2];
 
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
@@ -5171,30 +5176,55 @@ public:
     else
       dest_attr_type = src_region_attr_type ? (int8_t)(dest_attr_cache >> 24) : (int8_t)(dest_attr_cache >> 8);
 
-    uintptr_t buffer;
+    uintptr_t buffer_ptr, obj_ptr;
     // if (dest_attr_type == TYPE_YOUNG)
     //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][node_index];
     //   buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE) + node_index * OBJECT_PTR_SIZE);
     // else
     //   // buffer = (uintptr_t)((PLAB ***)alloc_buffers_ptr)[dest_attr_type][0];
     //   buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE)));
-    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE), 8, buffer));
-
-    uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-    uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, region_top));
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, region_end));
-    uintptr_t obj_ptr;
-    if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
+    int idx = dest_attr_type;
+    if (plabCache_valid[idx] && (region_end_cache[idx] - region_top_cache[idx]) / 8 >= size)
     {
-      obj_ptr = region_top;
-      *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", buffer + 0x30, 8, region_top + size * 8));
+      obj_ptr = region_top_cache[idx];
+      uintptr_t writeValue = region_top_cache[idx] + size * 8;
+      region_top_cache[idx] = writeValue;
+    }
+    else if (!plabCache_valid[idx])
+    {
+      if (!bufferCache_valid[idx])
+      {
+        buffer_ptr = *(uintptr_t *)(alloc_buffers_ptr + idx * 8);
+        buffer_cache[idx] = *(uintptr_t *)buffer_ptr;
+        bufferCache_valid[idx] = true;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + idx * 8, 8, buffer_ptr));
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_ptr, 8, buffer_cache[idx]));
+      }
+      region_top_cache[idx] = *(uintptr_t *)(buffer_cache[idx] + 0x30);
+      region_end_cache[idx] = *(uintptr_t *)(buffer_cache[idx] + 0x38);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_cache[idx] + 0x30, 8, region_top_cache[idx]));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_cache[idx] + 0x38, 8, region_end_cache[idx]));
+      plabCache_valid[idx] = true;
+
+      if ((region_end_cache[idx] - region_top_cache[idx]) / 8 >= size)
+      {
+        obj_ptr = region_top_cache[idx];
+        uintptr_t writeValue = region_top_cache[idx] + size * 8;
+        region_top_cache[idx] = writeValue;
+      }
+      else
+      {
+        obj_ptr = 0;
+        plabCache_valid[idx] = false;
+        *(uintptr_t *)(buffer_cache[idx] + 0x30) = region_top_cache[idx];
+      }
     }
     else
+    {
       obj_ptr = 0;
+      plabCache_valid[idx] = false;
+      *(uintptr_t *)(buffer_cache[idx] + 0x30) = region_top_cache[idx];
+    }
 
     if (obj_ptr == 0)
     {
@@ -5205,21 +5235,50 @@ public:
       {
         bool plab_refill_in_old_failed = false;
 
-        // plab_allocate
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + 1 * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE)));
-        buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE));
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + 1 * OBJECT_PTR_SIZE), 8, buffer));
-        uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-        uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, region_top));
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, region_end));
-        if ((region_end - region_top) / OBJECT_PTR_SIZE >= size)
+        idx = 1;
+        if (plabCache_valid[idx] && (region_end_cache[idx] - region_top_cache[idx]) / 8 >= size)
         {
-          obj_ptr = region_top;
-          *(uintptr_t *)(buffer + 0x30) = region_top + size * OBJECT_PTR_SIZE;
-          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", buffer + 0x30, 8, region_top + size * 8));
+          obj_ptr = region_top_cache[idx];
+          uintptr_t writeValue = region_top_cache[idx] + size * 8;
+          region_top_cache[idx] = writeValue;
+        }
+        else if (!plabCache_valid[idx])
+        {
+          if (!bufferCache_valid[idx])
+          {
+            buffer_ptr = *(uintptr_t *)(alloc_buffers_ptr + idx * 8);
+            buffer_cache[idx] = *(uintptr_t *)buffer_ptr;
+            bufferCache_valid[idx] = true;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, buffer_ptr));
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_ptr, 8, buffer_cache[idx]));
+          }
+          region_top_cache[idx] = *(uintptr_t *)(buffer_cache[idx] + 0x30);
+          region_end_cache[idx] = *(uintptr_t *)(buffer_cache[idx] + 0x38);
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_cache[idx] + 0x30, 8, region_top_cache[idx]));
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer_cache[idx] + 0x38, 8, region_end_cache[idx]));
+          plabCache_valid[idx] = true;
+
+          if ((region_end_cache[idx] - region_top_cache[idx]) / 8 >= size)
+          {
+            obj_ptr = region_top_cache[idx];
+            uintptr_t writeValue = region_top_cache[idx] + size * 8;
+            region_top_cache[idx] = writeValue;
+          }
+          else
+          {
+            obj_ptr = 0;
+            plabCache_valid[idx] = false;
+            *(uintptr_t *)(buffer_cache[idx] + 0x30) = region_top_cache[idx];
+          }
         }
         else
+        {
+          obj_ptr = 0;
+          plabCache_valid[idx] = false;
+          *(uintptr_t *)(buffer_cache[idx] + 0x30) = region_top_cache[idx];
+        }
+
+        if (obj_ptr == 0)
         {
           G1HeapRegionAttr temp;
           temp.set_old();
@@ -5786,6 +5845,12 @@ public:
 
       //@notice : do task
       localBot = *(uint *)(bottom_addr);
+      destAttrCache_valid = false;
+      plabCache_valid[0] = false;
+      plabCache_valid[1] = false;
+      bufferCache_valid[0] = false;
+      bufferCache_valid[1] = false;
+
       bool tag = false; // 决定是否需要分发处理该task
       do
       {
@@ -5808,6 +5873,10 @@ public:
 
       // end things
       *(uint *)bottom_addr = 0;
+      if (plabCache_valid[0])
+        *(uintptr_t *)(buffer_cache[0] + 0x30) = region_top_cache[0];
+      if (plabCache_valid[1])
+        *(uintptr_t *)(buffer_cache[1] + 0x30) = region_top_cache[1];
 
       // evacuate_live_objects(pss, worker_id);
       Ticks end = Ticks::now();
