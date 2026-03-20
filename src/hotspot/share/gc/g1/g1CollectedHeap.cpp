@@ -5299,15 +5299,15 @@ public:
     IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", old, 8, m));
     forward_ptr = 0;
 
-    {
-      const uint young_index = *(uint *)(from_region + YOUND_INDEX_IN_CSET_OFFSET);
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", from_region + 0x100, 4, young_index));
-      uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1d0, 8, young_words_base));
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
-      *((size_t *)young_words_base + young_index) += size;
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
-    }
+    //{
+    //  const uint young_index = *(uint *)(from_region + YOUND_INDEX_IN_CSET_OFFSET);
+    //  IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", from_region + 0x100, 4, young_index));
+    //  uintptr_t young_words_base = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+    //  IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1d0, 8, young_words_base));
+    //  IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
+    //  *((size_t *)young_words_base + young_index) += size;
+    //  IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", (uintptr_t)((size_t *)young_words_base + 0x1d0), 8, *(size_t *)((size_t *)young_words_base + 0x1d0)));
+    //}
 
     // upadte age
     uint64_t new_mark = old_mark;
