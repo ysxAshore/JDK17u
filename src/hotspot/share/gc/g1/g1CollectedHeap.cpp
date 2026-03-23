@@ -4025,6 +4025,15 @@ protected:
   bool plabCache_valid[2];
   uintptr_t region_top_cache[2];
   uintptr_t region_end_cache[2];
+  bool byte_about_valid;
+  uintptr_t byte_map_cache;
+  uintptr_t byte_map_base_cache;
+  bool last_index_valid;
+  uintptr_t last_index_cache;
+  bool parScan_offset40_valid;
+  uintptr_t offset40_cache;
+  uintptr_t index_cache;
+  uintptr_t buf_cache;
 
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
@@ -4295,32 +4304,46 @@ public:
       return;
 
     uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
-    uintptr_t _byte_map = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
-    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_OFFSET, 8, _byte_map));
 
-    uintptr_t _byte_map_base = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
-    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_BASE_OFFSET, 8, _byte_map_base));
+    if (!byte_about_valid)
+    {
+      byte_about_valid = true;
+      byte_map_cache = *(uintptr_t *)(ct_ptr + BYTE_MAP_OFFSET);
+      byte_map_base_cache = *(uintptr_t *)(ct_ptr + BYTE_MAP_BASE_OFFSET);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_OFFSET, 8, byte_map_cache));
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + BYTE_MAP_BASE_OFFSET, 8, byte_map_base_cache));
+    }
 
-    uintptr_t res = _byte_map_base + (p >> 9);
-    size_t card_index = res - _byte_map;
+    uintptr_t res = byte_map_base_cache + (p >> 9);
+    size_t card_index = res - byte_map_cache;
 
-    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET, 8, *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET)));
-    if (*(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) != card_index)
+    if (!last_index_valid)
+    {
+      last_index_valid = true;
+      last_index_cache = *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET, 8, *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET)));
+    }
+
+    if (last_index_cache != card_index)
     {
       uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
-      uintptr_t queue_ptr = rdc_local_qset_ptr + 0x30;
-      uintptr_t buffer = *(uintptr_t *)(queue_ptr + 0x10);
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr + 0x10, 8, buffer));
+      if (!parScan_offset40_valid)
+      {
+        parScan_offset40_valid = true;
+        offset40_cache = *(size_t *)(rdc_local_qset_ptr + 0x28);
+        index_cache = *(size_t *)(rdc_local_qset_ptr + 0x30) / 8;
+        buf_cache = *(uintptr_t *)(rdc_local_qset_ptr + 0x40);
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x28, 8, offset40_cache));
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x30, 8, index_cache * 8));
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x40, 8, buf_cache));
+      }
 
-      size_t index = *(size_t *)(queue_ptr) / OBJECT_PTR_SIZE;
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr, 8, index * 8));
-
-      if (index == 0)
+      if (index_cache == 0)
       {
         uintptr_t old_node = 0;
-        if (buffer != 0)
+        if (buf_cache != 0)
         {
-          old_node = buffer - 0x10;
+          old_node = buf_cache - 0x10;
           *(size_t *)(old_node) = 0;
           IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %x", old_node, 8, 0));
         }
@@ -4328,23 +4351,17 @@ public:
         uintptr_t node_allocator_ptr = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
         IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x8, 8, node_allocator_ptr));
 
-        buffer = buffer_node_allocate(node_allocator_ptr);
+        buf_cache = buffer_node_allocate(node_allocator_ptr);
 
-        *(uintptr_t *)(queue_ptr + 0x10) = buffer;
-        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", queue_ptr + 0x10, 8, buffer));
-
-        index = *(size_t *)(node_allocator_ptr); // index = buffersize
-        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", node_allocator_ptr, 8, index));
-
-        *(size_t *)queue_ptr = index * OBJECT_PTR_SIZE;
-        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", queue_ptr, 8, index * 8));
+        index_cache = *(size_t *)(node_allocator_ptr); // index = buffersize
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", node_allocator_ptr, 8, index_cache));
 
         if (old_node != 0)
         {
           uintptr_t buffer_list_ptr = rdc_local_qset_ptr + 0x18;
-          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", buffer_list_ptr + 0x10, 8, *(size_t *)(buffer_list_ptr + 0x10)));
-          *(size_t *)(buffer_list_ptr + 0x10) += index;
-          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer_list_ptr + 0x10, 8, *(size_t *)(buffer_list_ptr + 0x10)));
+
+          offset40_cache = offset40_cache + index_cache;
+
           *(uintptr_t *)(old_node + 0x8) = *(uintptr_t *)buffer_list_ptr;
           IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", buffer_list_ptr, 8, *(size_t *)(buffer_list_ptr)))
           IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", old_node + 0x8, 8, *(size_t *)(buffer_list_ptr)));
@@ -4359,14 +4376,9 @@ public:
           }
         }
       }
-      --index;
-
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer + index * 8, 8, res));
-      *(uintptr_t *)(buffer + index * OBJECT_PTR_SIZE) = res;
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", queue_ptr, 8, index * 8));
-      *(size_t *)(queue_ptr) = index * OBJECT_PTR_SIZE;
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", (uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET, 8, card_index));
-      *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = card_index;
+      --index_cache;
+      *(uintptr_t *)(buf_cache + index_cache * OBJECT_PTR_SIZE) = res;
+      last_index_cache = card_index;
     }
   }
 
@@ -5850,6 +5862,9 @@ public:
       plabCache_valid[1] = false;
       bufferCache_valid[0] = false;
       bufferCache_valid[1] = false;
+      byte_about_valid = false;
+      last_index_valid = false;
+      parScan_offset40_valid = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
@@ -5877,6 +5892,18 @@ public:
         *(uintptr_t *)(buffer_cache[0] + 0x30) = region_top_cache[0];
       if (plabCache_valid[1])
         *(uintptr_t *)(buffer_cache[1] + 0x30) = region_top_cache[1];
+      if (last_index_valid)
+        *(size_t *)((uintptr_t)pss + LAST_ENQUEUED_CARD_OFFSET) = last_index_cache;
+      if (parScan_offset40_valid)
+      {
+        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+        *(size_t *)(rdc_local_qset_ptr + 0x28) = offset40_cache;
+        *(size_t *)(rdc_local_qset_ptr + 0x30) = index_cache * 8;
+        *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buf_cache;
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", rdc_local_qset_ptr + 0x28, 8, offset40_cache));
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", rdc_local_qset_ptr + 0x30, 8, index_cache * 8));
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", rdc_local_qset_ptr + 0x40, 8, buf_cache));
+      }
 
       // evacuate_live_objects(pss, worker_id);
       Ticks end = Ticks::now();
