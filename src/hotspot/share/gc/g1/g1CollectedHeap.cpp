@@ -4042,6 +4042,14 @@ protected:
   uintptr_t wraddr;
   uintptr_t writeBufferData[4];
 
+  bool plab_stats_valid[2];
+  uintptr_t plab_stats_value[2];
+
+  bool allocator_ptr_valid;
+  uintptr_t allocator_ptr_cache;
+  uintptr_t buffer0_cache;
+  uintptr_t buffer1_cache;
+
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
                              G1GCPhaseTimes::GCParPhases objcopy_phase,
@@ -4991,45 +4999,52 @@ public:
 
   uintptr_t allocate_direct_or_new_plab(uintptr_t dest_attr_ptr, int8_t dest_attr_type, size_t word_sz, bool *plab_refill_failed, uint node_index, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss)
   {
-    uintptr_t plab_stats_ptr = 0;
-    if (dest_attr_type == 0)
-      plab_stats_ptr = (uintptr_t)_g1h + 0x250;
-    else if (dest_attr_type == 1)
-      plab_stats_ptr = (uintptr_t)_g1h + 0x2e0;
-
     // @notice: single thread
     uint no_of_gc_workers = 1;
 
     size_t gclab_word_size;
     size_t min_size = 0x102;
     size_t max_size = 0x40000;
-    // ResizePLAB = 1
-    size_t temp = *(size_t *)(plab_stats_ptr + 0x30) / no_of_gc_workers;
-    IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_stats_ptr + 0x30, 8, temp * 1));
 
-    gclab_word_size = MIN2(MAX2(temp, min_size), max_size);
+    // ResizePLAB = 1
+    if (!plab_stats_valid[dest_attr_type])
+    {
+      plab_stats_valid[dest_attr_type] = true;
+      uintptr_t addr = (uintptr_t)_g1h + (dest_attr_type ? 0x2e0 : 0x250);
+      plab_stats_value[dest_attr_type] = *(uintptr_t *)(addr + 0x30) / no_of_gc_workers;
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", addr, 8, plab_stats_value[dest_attr_type] * no_of_gc_workers));
+    }
+
+    gclab_word_size = MIN2(MAX2(plab_stats_value[dest_attr_type], min_size), max_size);
 
     // AlignmentReserve=0x2 humongous_object_threshold_in_words=0x40000
     size_t plab_word_size = MIN2(max_size, gclab_word_size);
     size_t required_in_plab = word_sz + 0x2;
 
-    uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
-    IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x8, 8, allocator_ptr));
+    if (!allocator_ptr_valid)
+    {
+      allocator_ptr_valid = true;
+      allocator_ptr_cache = *(uintptr_t *)(plab_allocator_ptr + 0x8);
+      uintptr_t buffer0_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x10);
+      uintptr_t buffer1_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x18);
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x8, 8, allocator_ptr_cache));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x10, 8, buffer0_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x18, 8, buffer1_ptr));
+
+      buffer0_cache = *(uintptr_t *)(buffer0_ptr);
+      buffer1_cache = *(uintptr_t *)(buffer1_ptr);
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer0_ptr, 8, buffer0_cache));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer1_ptr, 8, buffer1_cache));
+    }
 
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
     if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
-      uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
-      uintptr_t buffer;
-      buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE)));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * OBJECT_PTR_SIZE), 8, buffer));
+      uintptr_t buffer = dest_attr_type == 0 ? buffer0_cache : buffer1_cache;
 
       size_t result = 0;
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
       uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x30, 8, top_ptr));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x40, 8, hard_end_ptr));
 
       if (top_ptr < hard_end_ptr)
       {
@@ -5077,15 +5092,9 @@ public:
       *(uintptr_t *)(buffer + 0x50) += result;
       IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
 
-      //__num_plab_fills[dest.type()]++
-      uintptr_t num_plab_fills = plab_allocator_ptr + 0x30;
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", num_plab_fills + dest_attr_type * 8, 8, *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE)));
-      *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE) += 1;
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", num_plab_fills + dest_attr_type * 8, 8, *(uintptr_t *)(num_plab_fills + dest_attr_type * OBJECT_PTR_SIZE)));
-
       size_t actual_plab_size = 0;
       // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
-      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr, pss);
+      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr_cache, pss);
 
       if (obj_ptr != 0)
       {
@@ -5116,9 +5125,9 @@ public:
       *plab_refill_failed = true;
     }
 
-    temp = 0;
+    uintptr_t temp = 0;
     // uintptr_t obj = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, word_sz, word_sz, &temp, node_index);
-    uintptr_t obj = par_allocate_during_gc(dest_attr_type, word_sz, word_sz, &temp, node_index, allocator_ptr, pss);
+    uintptr_t obj = par_allocate_during_gc(dest_attr_type, word_sz, word_sz, &temp, node_index, allocator_ptr_cache, pss);
     return obj;
   }
 
@@ -5891,6 +5900,9 @@ public:
       parScan_offset40_valid = false;
       parScan_offset20_valid = false;
       wrcnt = 0;
+      plab_stats_valid[0] = false;
+      plab_stats_valid[1] = false;
+      allocator_ptr_valid = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
