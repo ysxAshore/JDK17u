@@ -4050,6 +4050,13 @@ protected:
   uintptr_t buffer0_cache;
   uintptr_t buffer1_cache;
 
+  bool region_ptr_valid;
+  uintptr_t region_ptr_cache;
+
+  bool is_full_valid;
+  uintptr_t addr_cache;
+  uint16_t is_full_cache;
+
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
                              G1GCPhaseTimes::GCParPhases objcopy_phase,
@@ -4936,17 +4943,19 @@ public:
   {
     uintptr_t result = 0;
     uintptr_t region_ptr = 0;
+
     if (dest_attr_type == 0)
     {
-      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
-      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", allocator_ptr + 0x28, 8, survivor_gc_alloc_ptr));
-      region_ptr = survivor_gc_alloc_ptr + node_index * 0x48;
+      if (!region_ptr_valid)
+      {
+        region_ptr_valid = true;
+        region_ptr_cache = *(uintptr_t *)(allocator_ptr + 0x28) + node_index * 0x48;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", allocator_ptr + 0x28, 8, *(uintptr_t *)(allocator_ptr + 0x28)));
+      }
+      region_ptr = region_ptr_cache;
     }
     else if (dest_attr_type == 1)
-    {
-      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
-      region_ptr = old_gc_alloc_region_ptr;
-    }
+      region_ptr = allocator_ptr + 0x30;
 
     uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
     IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", region_ptr + 0x8, 8, alloc_region));
@@ -4958,10 +4967,15 @@ public:
 
     if (result == 0)
     {
-      uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
-      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 1, is_full_value));
+      if (!is_full_valid)
+      {
+        is_full_valid = true;
+        is_full_cache = *(uint16_t *)(allocator_ptr + 0x10);
+        addr_cache = allocator_ptr + 0x10;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 2, is_full_cache));
+      }
 
-      bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+      bool is_full = dest_attr_type == 0 ? is_full_cache & 0xff : is_full_cache >> 8;
       if (!is_full)
       {
         // log_info(gc, task)("survivor mutex locker");
@@ -4981,13 +4995,7 @@ public:
           result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
 
         if (result == 0)
-        {
-          if (dest_attr_type == 0)
-            *(bool *)(allocator_ptr + 0x10) = true;
-          else if (dest_attr_type == 1)
-            *(bool *)(allocator_ptr + 0x11) = true;
-          IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11), 1, 1));
-        }
+          is_full_cache = dest_attr_type ? ((uint16_t)1 << 8 | is_full_cache & 0xff) : ((is_full_cache & 0xff00) | (uint8_t)1);
         // FreeList_lock->set_owner(NULL);
         *(uintptr_t *)lock_ptr = 0;
         IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", lock_ptr, 8, 0));
@@ -5045,6 +5053,8 @@ public:
       size_t result = 0;
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
       uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x30, 8, top_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x40, 8, hard_end_ptr));
 
       if (top_ptr < hard_end_ptr)
       {
@@ -5089,7 +5099,6 @@ public:
       }
 
       IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
-      *(uintptr_t *)(buffer + 0x50) += result;
       IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
 
       size_t actual_plab_size = 0;
@@ -5098,7 +5107,7 @@ public:
 
       if (obj_ptr != 0)
       {
-        *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
+        //*(uintptr_t *)(buffer + 0x20) = actual_plab_size;
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
@@ -5108,7 +5117,7 @@ public:
           IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + i, 8, *(uintptr_t *)(buffer + i)));
 
         IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
-        *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
+        //*(uintptr_t *)(buffer + 0x48) += actual_plab_size;
         IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
 
         uintptr_t obj = obj_ptr;
@@ -5903,6 +5912,8 @@ public:
       plab_stats_valid[0] = false;
       plab_stats_valid[1] = false;
       allocator_ptr_valid = false;
+      region_ptr_valid = false;
+      is_full_valid = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
@@ -5957,6 +5968,8 @@ public:
           addr += 8;
         }
       }
+      if (is_full_valid)
+        *(uint16_t *)addr_cache = is_full_cache;
 
       // evacuate_live_objects(pss, worker_id);
       Ticks end = Ticks::now();
