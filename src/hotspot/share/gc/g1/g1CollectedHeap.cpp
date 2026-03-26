@@ -4047,15 +4047,13 @@ protected:
 
   bool allocator_ptr_valid;
   uintptr_t allocator_ptr_cache;
-  uintptr_t buffer0_cache;
-  uintptr_t buffer1_cache;
+  uintptr_t bufCache[2];
 
-  bool region_ptr_valid;
-  uintptr_t region_ptr_cache;
+  bool region_ptr_valid[2];
+  uintptr_t region_ptr_cache[2];
 
-  bool is_full_valid;
-  uintptr_t addr_cache;
-  uint16_t is_full_cache;
+  bool alloc_region_valid[2];
+  uintptr_t alloc_region_cache[2];
 
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
@@ -4577,29 +4575,28 @@ public:
 
             if (start_card <= end_card)
             {
-              size_t start_card_for_region = start_card;
-              u_char offset = 0xff; // const jubyte  max_jubyte  = (jubyte)-1;  // 0xFF       largest jubyte
-              // @notice: blockOffsetTable.hpp -> BOTConstants::N_powers = 14
-              for (uint i = 0; i < 14; i++)
+              size_t remaining = end_card - start_card + 1;
+              uintptr_t begin = array + start_card;
+
+              for (uint i = 0; i < 14 && remaining > 0; i++)
               {
-                // @notice: blockOffsetTable.hpp -> BOTConstants::LogBase = 4
-                size_t reach = start_card - 1 + ((1 << (4 * (i + 1))) - 1);
-                offset = 64 + i;
-                size_t num_cards = (reach >= end_card ? end_card : reach) - start_card_for_region + 1;
-                uintptr_t begin = array + start_card_for_region;
-                while (num_cards--)
-                {
-                  *(u_int8_t *)begin = offset;
-                  IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", begin, 1, offset));
-                  begin++;
-                }
-                start_card_for_region = reach + 1;
-                if (reach >= end_card)
-                  break;
+                size_t chunk = size_t(15) << (4 * i); // 15 * 16^i
+                size_t nbytes = (remaining < chunk) ? remaining : chunk;
+                u_char offset = u_char(64 + i);
+
+                memset((void *)begin, offset, nbytes);
+
+                IFDEF(TRACE, tty->print_cr(
+                                 "par_allocate: access %lx (%zx bytes) to write %x",
+                                 begin, nbytes, offset));
+
+                begin += nbytes;
+                remaining -= nbytes;
               }
             }
           }
         }
+
         index = end_index + 1;
         threshold = reserved_start + ((end_index << 6) + 64) * OBJECT_PTR_SIZE;
         *(uintptr_t *)(bot_part_ptr) = threshold;
@@ -4830,8 +4827,9 @@ public:
     return 0;
   }
 
-  uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t alloc_region, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size)
+  uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t *alloc_region_ptr, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size)
   {
+    uintptr_t alloc_region = *(uintptr_t *)alloc_region_ptr;
     if (alloc_region != dummy_region)
     {
       // fill up can set false
@@ -4844,27 +4842,8 @@ public:
       size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
 
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
-      *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
-
       int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + PURPOSE_ATTR_OFFSET, 1, type));
-
-      if (type == 1)
-      {
-        uintptr_t old_set = (uintptr_t)_g1h + G1H_OLDSET_OFFSET;
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
-        *(uint *)(old_set + 0x10) += 1;
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
-      }
-      else
-      {
-        uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
-        *(size_t *)(survivor_ptr + USED_BYTES_OFFSET) += allocated_bytes;
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
-      }
 
       bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im));
@@ -4897,46 +4876,32 @@ public:
         *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", root_regions_ptr + 0x10, 8, idx + 1));
       }
-
-      *(uintptr_t *)(region_ptr + USED_BYTES_BEFORE_OFFSET) = 0;
-      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = dummy_region;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + USED_BYTES_BEFORE_OFFSET, 8, 0));
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + ALLOC_REGION_OFFSET, 8, dummy_region));
     }
     uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
 
-    if (new_alloc_region != 0)
-    {
-      *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + PRE_DUMMY_TOP_OFFSET, 8, 0));
+    *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + PRE_DUMMY_TOP_OFFSET, 8, 0));
 
-      uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
-      uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region, 8, bottom));
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region + 0x10, 8, top));
+    uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
+    uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region, 8, bottom));
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region + 0x10, 8, top));
 
-      *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x18, 8, top - bottom));
+    *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x18, 8, top - bottom));
 
-      bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + BOT_UPDATES_OFFSET, 1, bot_updates));
+    bool bot_updates = *(bool *)(region_ptr + BOT_UPDATES_OFFSET);
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + BOT_UPDATES_OFFSET, 1, bot_updates));
 
-      size_t temp;
-      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
+    size_t temp;
+    uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates);
 
-      *(uintptr_t *)(region_ptr + ALLOC_REGION_OFFSET) = new_alloc_region;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + ALLOC_REGION_OFFSET, 8, new_alloc_region));
+    *(uintptr_t *)(alloc_region_ptr) = new_alloc_region;
+    *(uintptr_t *)(region_ptr + 0x8) = new_alloc_region;
 
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + COUNT_OFFSET, 4, *(uint *)(region_ptr + COUNT_OFFSET)));
-      *(uint *)(region_ptr + COUNT_OFFSET) += 1;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + COUNT_OFFSET, 4, *(uint *)(region_ptr + COUNT_OFFSET)));
-
-      if (result != 0)
-        *actual_word_size = desired_word_size;
-      return result;
-    }
-    else
-      return 0;
+    if (result != 0)
+      *actual_word_size = desired_word_size;
+    return result;
   }
 
   uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint node_index, uintptr_t allocator_ptr, G1ParScanThreadState *pss)
@@ -4944,21 +4909,27 @@ public:
     uintptr_t result = 0;
     uintptr_t region_ptr = 0;
 
-    if (dest_attr_type == 0)
+    if (!region_ptr_valid[dest_attr_type])
     {
-      if (!region_ptr_valid)
+      region_ptr_valid[dest_attr_type] = true;
+      if (dest_attr_type == 0)
       {
-        region_ptr_valid = true;
-        region_ptr_cache = *(uintptr_t *)(allocator_ptr + 0x28) + node_index * 0x48;
+        region_ptr_cache[0] = *(uintptr_t *)(allocator_ptr + 0x28) + node_index * 0x48;
         IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", allocator_ptr + 0x28, 8, *(uintptr_t *)(allocator_ptr + 0x28)));
       }
-      region_ptr = region_ptr_cache;
+      else
+        region_ptr_cache[1] = allocator_ptr + 0x30;
     }
-    else if (dest_attr_type == 1)
-      region_ptr = allocator_ptr + 0x30;
+    region_ptr = region_ptr_cache[dest_attr_type];
 
-    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
-    IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", region_ptr + 0x8, 8, alloc_region));
+    if (!alloc_region_valid[dest_attr_type])
+    {
+      alloc_region_valid[dest_attr_type] = true;
+      alloc_region_cache[dest_attr_type] = *(uintptr_t *)(region_ptr + 0x8);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", region_ptr + 0x8, 8, alloc_region_cache[dest_attr_type]));
+    }
+
+    uintptr_t alloc_region = alloc_region_cache[dest_attr_type];
 
     if (dest_attr_type == 0)
       result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
@@ -4967,39 +4938,24 @@ public:
 
     if (result == 0)
     {
-      if (!is_full_valid)
-      {
-        is_full_valid = true;
-        is_full_cache = *(uint16_t *)(allocator_ptr + 0x10);
-        addr_cache = allocator_ptr + 0x10;
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 2, is_full_cache));
-      }
+      // log_info(gc, task)("survivor mutex locker");
+      uintptr_t thread = (uintptr_t)Thread::current();
+      uintptr_t lock_ptr = (uintptr_t)FreeList_lock;
+      *(uintptr_t *)lock_ptr = thread;
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", lock_ptr, 8, thread));
+      // FreeList_lock->set_owner(Thread::current());
+      // MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
 
-      bool is_full = dest_attr_type == 0 ? is_full_cache & 0xff : is_full_cache >> 8;
-      if (!is_full)
-      {
-        // log_info(gc, task)("survivor mutex locker");
-        uintptr_t thread = (uintptr_t)Thread::current();
-        uintptr_t lock_ptr = (uintptr_t)FreeList_lock;
-        *(uintptr_t *)lock_ptr = thread;
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", lock_ptr, 8, thread));
-        // FreeList_lock->set_owner(Thread::current());
-        // MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
+      if (dest_attr_type == 0)
+        result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+      else if (dest_attr_type == 1)
+        result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
 
-        if (dest_attr_type == 0)
-          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
-        else if (dest_attr_type == 1)
-          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
-
-        if (result == 0)
-          result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
-
-        if (result == 0)
-          is_full_cache = dest_attr_type ? ((uint16_t)1 << 8 | is_full_cache & 0xff) : ((is_full_cache & 0xff00) | (uint8_t)1);
-        // FreeList_lock->set_owner(NULL);
-        *(uintptr_t *)lock_ptr = 0;
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", lock_ptr, 8, 0));
-      }
+      if (result == 0)
+        result = attempt_allocation_using_new_region(region_ptr, &alloc_region_cache[dest_attr_type], (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+      // FreeList_lock->set_owner(NULL);
+      *(uintptr_t *)lock_ptr = 0;
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", lock_ptr, 8, 0));
     }
 
     return result;
@@ -5039,22 +4995,21 @@ public:
       IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x10, 8, buffer0_ptr));
       IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", plab_allocator_ptr + 0x18, 8, buffer1_ptr));
 
-      buffer0_cache = *(uintptr_t *)(buffer0_ptr);
-      buffer1_cache = *(uintptr_t *)(buffer1_ptr);
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer0_ptr, 8, buffer0_cache));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer1_ptr, 8, buffer1_cache));
+      bufCache[0] = *(uintptr_t *)(buffer0_ptr);
+      bufCache[1] = *(uintptr_t *)(buffer1_ptr);
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer0_ptr, 8, bufCache[0]));
+      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer1_ptr, 8, bufCache[1]));
     }
 
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
     if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
-      uintptr_t buffer = dest_attr_type == 0 ? buffer0_cache : buffer1_cache;
+      uintptr_t buffer = bufCache[dest_attr_type];
 
       size_t result = 0;
+
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
       uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x30, 8, top_ptr));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x40, 8, hard_end_ptr));
 
       if (top_ptr < hard_end_ptr)
       {
@@ -5087,19 +5042,7 @@ public:
             IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + KlassOff, 8, klass_ptr));
           }
         }
-
-        *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
-        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x38, 8, hard_end_ptr));
-        size_t remaining = (hard_end_ptr - top_ptr) / OBJECT_PTR_SIZE;
-        *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
-        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x30, 8, hard_end_ptr));
-        *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
-        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x28, 8, hard_end_ptr));
-        result = remaining;
       }
-
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
-      IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x50, 8, *(uintptr_t *)(buffer + 0x50)));
 
       size_t actual_plab_size = 0;
       // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
@@ -5107,17 +5050,15 @@ public:
 
       if (obj_ptr != 0)
       {
-        //*(uintptr_t *)(buffer + 0x20) = actual_plab_size;
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
         *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
 
-        for (int i = 0x20; i < 0x40; i += 8)
+        for (int i = 0x28; i < 0x48; i += 8)
           IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + i, 8, *(uintptr_t *)(buffer + i)));
 
         IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
-        //*(uintptr_t *)(buffer + 0x48) += actual_plab_size;
         IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
 
         uintptr_t obj = obj_ptr;
@@ -5912,8 +5853,10 @@ public:
       plab_stats_valid[0] = false;
       plab_stats_valid[1] = false;
       allocator_ptr_valid = false;
-      region_ptr_valid = false;
-      is_full_valid = false;
+      region_ptr_valid[0] = false;
+      region_ptr_valid[1] = false;
+      alloc_region_valid[0] = false;
+      alloc_region_valid[1] = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
@@ -5968,8 +5911,6 @@ public:
           addr += 8;
         }
       }
-      if (is_full_valid)
-        *(uint16_t *)addr_cache = is_full_cache;
 
       // evacuate_live_objects(pss, worker_id);
       Ticks end = Ticks::now();
