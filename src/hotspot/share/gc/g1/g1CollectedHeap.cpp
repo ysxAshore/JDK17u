@@ -4060,6 +4060,12 @@ protected:
   uintptr_t alloc_top_cache;
   uintptr_t alloc_end_cache;
 
+  bool list_about_valid;
+  uint list_length;
+  uintptr_t list_head_ptr;
+  uintptr_t list_end_ptr;
+  uintptr_t list_last_ptr;
+
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
                              G1GCPhaseTimes::GCParPhases objcopy_phase,
@@ -4626,93 +4632,113 @@ public:
     uintptr_t hrm_ptr = (uintptr_t)_g1h + G1H_HRM_OFFSET;
     uintptr_t free_list_ptr = hrm_ptr + FREELIST_OFFSET;
     bool from_head = (heap_region_type & 0x2) == 0;
-    uintptr_t numa_ptr = (uintptr_t)G1NUMA::numa();
-    uint active_node_ids = *(uint *)(numa_ptr + ACTIVE_NODE_IDS_OFFSET);
-    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + ACTIVE_NODE_IDS_OFFSET, 4, active_node_ids));
 
     uintptr_t res = 0;
-    if (node_index != UINT_MAX - 1 && active_node_ids > 1)
-    {
-      uint region_size = *(uint *)(numa_ptr + REGION_SIZE_OFFSET);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + REGION_SIZE_OFFSET, 4, region_size));
+    // @notice: 对于single thread 来说 active_node_ids = 1
+    // if (node_index != UINT_MAX - 1 && active_node_ids > 1)
+    //{
+    //   uint region_size = *(uint *)(numa_ptr + REGION_SIZE_OFFSET);
+    //   tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + REGION_SIZE_OFFSET, 4, region_size);
 
-      uint page_size = *(uint *)(numa_ptr + PAGE_SIZE_OFFSET);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + PAGE_SIZE_OFFSET, 4, page_size));
+    //  uint page_size = *(uint *)(numa_ptr + PAGE_SIZE_OFFSET);
+    //  tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + PAGE_SIZE_OFFSET, 4, page_size);
 
-      uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
+    //  uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
 
-      uintptr_t cur;
-      size_t cur_depth = 0;
-      if (from_head)
-        cur = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
-      else
-        cur = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET), 8, cur));
+    //  uintptr_t cur;
+    //  size_t cur_depth = 0;
+    //  if (from_head)
+    //    cur = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
+    //  else
+    //    cur = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
+    //  IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET), 8, cur));
 
-      while (cur != 0 && cur_depth < max_search_depth)
-      {
-        if (node_index == *(uint *)(cur + NODE_INDEX_OFFSET))
-          break;
-        ++cur_depth;
-        uintptr_t temp = cur;
-        if (from_head)
-          cur = *(uintptr_t *)(cur + REGION_NEXT_OFFSET);
-        else
-          cur = *(uintptr_t *)(cur + REGION_PREV_OFFSET);
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", temp + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, cur));
-      }
+    //  while (cur != 0 && cur_depth < max_search_depth)
+    //  {
+    //    if (node_index == *(uint *)(cur + NODE_INDEX_OFFSET))
+    //      break;
+    //    ++cur_depth;
+    //    uintptr_t temp = cur;
+    //    if (from_head)
+    //      cur = *(uintptr_t *)(cur + REGION_NEXT_OFFSET);
+    //    else
+    //      cur = *(uintptr_t *)(cur + REGION_PREV_OFFSET);
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", temp + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, cur));
+    //  }
 
-      if (cur == 0 || cur_depth >= max_search_depth)
-        res = 0;
-      else
-      {
-        res = cur;
-        uintptr_t prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
-        uintptr_t next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_PREV_OFFSET, 8, prev));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_NEXT_OFFSET, 8, next));
+    //  if (cur == 0 || cur_depth >= max_search_depth)
+    //    res = 0;
+    //  else
+    //  {
+    //    res = cur;
+    //    uintptr_t prev = *(uintptr_t *)(res + REGION_PREV_OFFSET);
+    //    uintptr_t next = *(uintptr_t *)(res + REGION_NEXT_OFFSET);
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_PREV_OFFSET, 8, prev));
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + REGION_NEXT_OFFSET, 8, next));
 
-        if (prev == 0)
-          *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = next;
-        else
-          *(uintptr_t *)(prev + REGION_NEXT_OFFSET) = next;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", prev == 0 ? free_list_ptr + LIST_HEAD_PTR_OFFSET : prev + REGION_NEXT_OFFSET, 8, next));
+    //    if (prev == 0)
+    //      *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = next;
+    //    else
+    //      *(uintptr_t *)(prev + REGION_NEXT_OFFSET) = next;
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", prev == 0 ? free_list_ptr + LIST_HEAD_PTR_OFFSET : prev + REGION_NEXT_OFFSET, 8, next));
 
-        if (next == 0)
-          *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = prev;
-        else
-          *(uintptr_t *)(next + REGION_PREV_OFFSET) = prev;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", next == 0 ? free_list_ptr + LIST_TAIL_PTR_OFFSET : next + REGION_PREV_OFFSET, 8, prev));
+    //    if (next == 0)
+    //      *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = prev;
+    //    else
+    //      *(uintptr_t *)(next + REGION_PREV_OFFSET) = prev;
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", next == 0 ? free_list_ptr + LIST_TAIL_PTR_OFFSET : next + REGION_PREV_OFFSET, 8, prev));
 
-        *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
-        *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_PREV_OFFSET, 8, 0));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_NEXT_OFFSET, 8, 0));
-      }
-    }
+    //    *(uintptr_t *)(res + REGION_NEXT_OFFSET) = 0;
+    //    *(uintptr_t *)(res + REGION_PREV_OFFSET) = 0;
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_PREV_OFFSET, 8, 0));
+    //    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + REGION_NEXT_OFFSET, 8, 0));
+    //  }
+    //}
 
     if (res == 0)
     {
-      uint length = *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + LIST_LENGTH_OFFSET, 4, length));
-      if (length == 0)
+      if (!list_about_valid)
+      {
+        list_length = *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET);
+        list_head_ptr = *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET);
+        list_end_ptr = *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET);
+        list_last_ptr = *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET);
+        list_about_valid = true;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + LIST_LENGTH_OFFSET, 4, list_length));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + LIST_HEAD_PTR_OFFSET, 8, list_head_ptr));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + LIST_TAIL_PTR_OFFSET, 8, list_end_ptr));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + LIST_LAST_PTR_OFFSET, 8, list_last_ptr));
+      }
+      if (list_length == 0)
+      {
         res = 0;
+        list_about_valid = false;
+        *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET) = 0;
+        *(uintptr_t *)(free_list_ptr + LIST_HEAD_PTR_OFFSET) = list_head_ptr;
+        *(uintptr_t *)(free_list_ptr + LIST_TAIL_PTR_OFFSET) = list_end_ptr;
+        *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) = list_last_ptr;
+      }
       else
       {
-        res = *(uintptr_t *)(free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", (free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET)), 8, res));
+        res = from_head ? list_head_ptr : list_end_ptr;
 
         uintptr_t res_conf = *(uintptr_t *)(res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET));
         IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, res_conf));
 
-        *(uintptr_t *)(free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET)) = res_conf;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", free_list_ptr + (from_head ? LIST_HEAD_PTR_OFFSET : LIST_TAIL_PTR_OFFSET), 8, res_conf));
+        if (from_head)
+          list_head_ptr = res_conf;
+        else
+          list_end_ptr = res_conf;
 
         if (res_conf == 0)
-          *(uintptr_t *)(free_list_ptr + (from_head ? LIST_TAIL_PTR_OFFSET : LIST_HEAD_PTR_OFFSET)) = 0;
+        {
+          if (from_head)
+            list_end_ptr = 0;
+          else
+            list_head_ptr = 0;
+        }
         else
           *(uintptr_t *)(res_conf + (from_head ? REGION_PREV_OFFSET : REGION_NEXT_OFFSET)) = 0;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res_conf == 0 ? free_list_ptr + (from_head ? LIST_TAIL_PTR_OFFSET : LIST_HEAD_PTR_OFFSET) : res_conf + (from_head ? REGION_PREV_OFFSET : REGION_NEXT_OFFSET), 8, 0));
 
         *(uintptr_t *)(res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET)) = 0;
         IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? REGION_NEXT_OFFSET : REGION_PREV_OFFSET), 8, 0))
@@ -4721,12 +4747,10 @@ public:
 
     if (res != 0)
     {
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + LIST_LAST_PTR_OFFSET, 8, *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET)))
-      if (*(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) == res)
-        *(uintptr_t *)(free_list_ptr + LIST_LAST_PTR_OFFSET) = 0;
+      if (list_last_ptr == res)
+        list_last_ptr = 0;
 
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + LIST_LENGTH_OFFSET, 4, *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET)));
-      *(uint *)(free_list_ptr + LIST_LENGTH_OFFSET) -= 1;
+      list_length = list_length - 1;
     }
 
     return res;
@@ -4737,20 +4761,12 @@ public:
     // uintptr_t res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
     uintptr_t res = allocate_free_region(heap_region_type, node_index);
 
-    bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
-    IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x370, 1, expand_failure));
-
-    if (res == 0 && expand_failure)
+    if (res == 0)
     {
-      IFDEF(TRACE, tty->print_cr("needs interrupt to call expand_single_region"));
-      if (_g1h->expand_single_region(node_index))
-        // res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
-        res = allocate_free_region(heap_region_type, node_index);
-      else
-      {
-        *(bool *)((uintptr_t)_g1h + 0x370) = false;
-        IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to write %x", (uintptr_t)_g1h + 0x370, 1, 0));
-      }
+      tty->print_cr("needs interrupt to call expand_single_region");
+      _g1h->expand_single_region(node_index);
+      // res = (uintptr_t)((HeapRegionManager *)hrm_ptr)->allocate_free_region(debug_type, node_index);
+      res = allocate_free_region(heap_region_type, node_index);
     }
 
     return res;
@@ -4764,13 +4780,6 @@ public:
     uint node_index = *(uint *)(region_ptr + ALLOC_REGION_NODE_OFFSET);
     IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", region_ptr + ALLOC_REGION_NODE_OFFSET, 4, node_index));
 
-    uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
-    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
-    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + REGIONS_GROW_ARRAY_OFFSET, 8, grow_array_ptr));
-
-    uintptr_t policy_ptr = *(uintptr_t *)((uintptr_t)_g1h + G1H_POLICY_OFFSET);
-    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + G1H_POLICY_OFFSET, 8, policy_ptr));
-
     bool has_more_regions;
     uint heap_region_type;
     if (type == ATTR_TYPE_OLD)
@@ -4780,64 +4789,60 @@ public:
 
     uintptr_t new_alloc_region = new_region(word_sz, heap_region_type, node_index);
 
-    if (new_alloc_region != 0)
+    uintptr_t survivor_ptr = (uintptr_t)_g1h + G1H_SURVIVOR_OFFSET;
+    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + REGIONS_GROW_ARRAY_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + REGIONS_GROW_ARRAY_OFFSET, 8, grow_array_ptr));
+
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", (uintptr_t)new_alloc_region + REGION_TYPE_OFFSET, 4, heap_region_type));
+    if (heap_region_type == REGION_TYPE_SURVIVOR)
     {
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", (uintptr_t)new_alloc_region + REGION_TYPE_OFFSET, 4, heap_region_type));
-      if (heap_region_type == REGION_TYPE_SURVIVOR)
+      *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
+
+      int len = *(int *)(grow_array_ptr);
+      int max = *(int *)(grow_array_ptr + 0x4);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr, 8, *(uintptr_t *)grow_array_ptr));
+
+      if (len == max)
       {
-        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_SURVIVOR;
-
-        int len = *(int *)(grow_array_ptr);
-        int max = *(int *)(grow_array_ptr + 0x4);
-        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr, 8, *(uintptr_t *)grow_array_ptr));
-
-        if (len == max)
-        {
-          IFDEF(TRACE, tty->print_cr("needs interrupt to call grow array grow"));
-          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-        }
-        int idx = len;
-        ++len;
-        *(int *)(grow_array_ptr) = len;
-        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", grow_array_ptr, 4, len));
-
-        uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
-        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr + 0x8, 8, data_ptr));
-
-        *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
-        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %lx", data_ptr + idx * 8, 8, new_alloc_region));
+        IFDEF(TRACE, tty->print_cr("needs interrupt to call grow array grow"));
+        ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
       }
-      else
-        *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
+      int idx = len;
+      ++len;
+      *(int *)(grow_array_ptr) = len;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", grow_array_ptr, 4, len));
 
-      uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", new_alloc_region + 0xb0, 8, remset_ptr));
+      uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr + 0x8, 8, data_ptr));
 
-      uint new_type = *(uint *)(new_alloc_region + REGION_TYPE_OFFSET);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xbc, 4, new_type));
-
-      assert(new_type == heap_region_type, "error");
-      uintptr_t state_ptr = remset_ptr + 0xf0;
-      if ((new_type & REGION_YOUNG_MASK) != 0)
-        *(uint *)state_ptr = 2;
-      else if ((new_type & REGION_OLD_MASK) != 0)
-        *(uint *)state_ptr = 0;
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", state_ptr, 4, *(uint *)state_ptr));
-
-      uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xb8, 4, hrm_index));
-
-      bool needs_remset_update = (new_type & REGION_OLD_MASK) == 0;
-      uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
-      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
-
-      *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", region_attr_base + hrm_index * ATTR_SIZE, 1, needs_remset_update));
-
-      return new_alloc_region;
+      *(uintptr_t *)(data_ptr + idx * OBJECT_PTR_SIZE) = new_alloc_region;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %lx", data_ptr + idx * 8, 8, new_alloc_region));
     }
-    return 0;
+    else
+      *(uint *)(new_alloc_region + REGION_TYPE_OFFSET) = REGION_TYPE_OLD;
+
+    uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + REGION_REM_SET_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", new_alloc_region + 0xb0, 8, remset_ptr));
+    uint hrm_index = *(uint *)(new_alloc_region + REGION_HRM_INDEX_OFFSET);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xb8, 4, hrm_index));
+
+    assert(heap_region_type == heap_region_type, "error");
+    uintptr_t state_ptr = remset_ptr + 0xf0;
+    if ((heap_region_type & REGION_YOUNG_MASK) != 0)
+      *(uint *)state_ptr = 2;
+    else if ((heap_region_type & REGION_OLD_MASK) != 0)
+      *(uint *)state_ptr = 0;
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", state_ptr, 4, *(uint *)state_ptr));
+
+    bool needs_remset_update = (heap_region_type & REGION_OLD_MASK) == 0;
+    uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
+    uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
+
+    *(u_int8_t *)(region_attr_base + hrm_index * ATTR_SIZE) = needs_remset_update;
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", region_attr_base + hrm_index * ATTR_SIZE, 1, needs_remset_update));
+
+    return new_alloc_region;
   }
 
   uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t *alloc_region_ptr, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size)
@@ -5856,6 +5861,7 @@ public:
       alloc_region_valid[0] = false;
       alloc_region_valid[1] = false;
       alloc_top_valid = false;
+      list_about_valid = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
