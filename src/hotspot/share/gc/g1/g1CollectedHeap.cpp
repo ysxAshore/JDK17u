@@ -4055,6 +4055,11 @@ protected:
   bool alloc_region_valid[2];
   uintptr_t alloc_region_cache[2];
 
+  uintptr_t alloc_top_valid;
+  uintptr_t all_region_cache;
+  uintptr_t alloc_top_cache;
+  uintptr_t alloc_end_cache;
+
   void evacuate_live_objects(G1ParScanThreadState *pss,
                              uint worker_id,
                              G1GCPhaseTimes::GCParPhases objcopy_phase,
@@ -4501,29 +4506,37 @@ public:
     uintptr_t alloc_result;
     // do
     //{
-    uintptr_t top = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
-    IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_TOP_OFFSET, 8, top));
-
-    uintptr_t end = *(uintptr_t *)(alloc_region + REGION_END_OFFSET);
-    IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_END_OFFSET, 8, end));
-
-    size_t available = (end - top) / OBJECT_PTR_SIZE;
+    if (!alloc_top_valid || alloc_region != all_region_cache)
+    {
+      if (alloc_top_valid)
+        *(uintptr_t *)(all_region_cache + REGION_TOP_OFFSET) = alloc_top_cache;
+      alloc_top_valid = true;
+      all_region_cache = alloc_region;
+      alloc_top_cache = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
+      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_TOP_OFFSET, 8, alloc_top_cache));
+      alloc_end_cache = *(uintptr_t *)(alloc_region + REGION_END_OFFSET);
+      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + REGION_END_OFFSET, 8, alloc_end_cache));
+    }
+    size_t available = (alloc_end_cache - alloc_top_cache) / OBJECT_PTR_SIZE;
     size_t want_to_allocate = available > desired_word_size ? desired_word_size : available;
     if (want_to_allocate >= min_word_size)
     {
-      uintptr_t new_top = top + want_to_allocate * OBJECT_PTR_SIZE;
+      uintptr_t origin_value = alloc_top_cache;
+      uintptr_t new_top = origin_value + want_to_allocate * OBJECT_PTR_SIZE;
       // uintptr_t result = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
       //  @notice: single thread must equal
       //  if (result == top)
       //{
-      *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET) = new_top;
-      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + REGION_TOP_OFFSET, 8, new_top));
+      alloc_top_cache = new_top;
       *actual_plab_size = want_to_allocate;
-      return top;
+      return origin_value;
       //}
     }
     else
+    {
+      *(uintptr_t *)(all_region_cache + REGION_TOP_OFFSET) = alloc_top_cache;
       return 0;
+    }
     //} while (true);
   }
 
@@ -4836,14 +4849,11 @@ public:
       uintptr_t bottom = *(uintptr_t *)(alloc_region);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region, 8, bottom));
 
-      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
+      uintptr_t top = alloc_top_cache;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, bottom));
 
       size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
-
-      int8_t type = *(int8_t *)(region_ptr + PURPOSE_ATTR_OFFSET);
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + PURPOSE_ATTR_OFFSET, 1, type));
 
       bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im));
@@ -4856,9 +4866,6 @@ public:
         uintptr_t start = *(uintptr_t *)(alloc_region + NEXT_TOP_AT_MARK_START_OFFSET);
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + NEXT_TOP_AT_MARK_START_OFFSET, 8, start));
 
-        uintptr_t end = *(uintptr_t *)(alloc_region + REGION_TOP_OFFSET);
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + REGION_TOP_OFFSET, 8, end));
-
         uintptr_t root_regions_ptr = cm + 0xb0;
         uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr, 8, root_regions_array));
@@ -4869,18 +4876,15 @@ public:
         uintptr_t mem_region = root_regions_array + idx * 0x10;
 
         *(uintptr_t *)(mem_region) = start;
-        *(uintptr_t *)(mem_region + 0x8) = (end - start) / OBJECT_PTR_SIZE;
+        *(uintptr_t *)(mem_region + 0x8) = (top - start) / OBJECT_PTR_SIZE;
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region, 8, start));
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region + 0x8, 8, (end - start) / 8));
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region + 0x8, 8, (top - start) / 8));
 
         *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", root_regions_ptr + 0x10, 8, idx + 1));
       }
     }
     uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size);
-
-    *(uintptr_t *)(new_alloc_region + PRE_DUMMY_TOP_OFFSET) = 0;
-    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + PRE_DUMMY_TOP_OFFSET, 8, 0));
 
     uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
     uintptr_t top = *(uintptr_t *)(new_alloc_region + REGION_TOP_OFFSET);
@@ -4946,13 +4950,7 @@ public:
       // FreeList_lock->set_owner(Thread::current());
       // MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
 
-      if (dest_attr_type == 0)
-        result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
-      else if (dest_attr_type == 1)
-        result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
-
-      if (result == 0)
-        result = attempt_allocation_using_new_region(region_ptr, &alloc_region_cache[dest_attr_type], (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+      result = attempt_allocation_using_new_region(region_ptr, &alloc_region_cache[dest_attr_type], (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
       // FreeList_lock->set_owner(NULL);
       *(uintptr_t *)lock_ptr = 0;
       IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", lock_ptr, 8, 0));
@@ -5004,6 +5002,10 @@ public:
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
     if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
+      size_t actual_plab_size = 0;
+
+      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr_cache, pss);
+
       uintptr_t buffer = bufCache[dest_attr_type];
 
       size_t result = 0;
@@ -5044,10 +5046,6 @@ public:
         }
       }
 
-      size_t actual_plab_size = 0;
-      // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(*(G1HeapRegionAttr *)dest_attr_ptr, required_in_plab, plab_word_size, &actual_plab_size, node_index);
-      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, node_index, allocator_ptr_cache, pss);
-
       if (obj_ptr != 0)
       {
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
@@ -5055,7 +5053,7 @@ public:
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * OBJECT_PTR_SIZE;
         *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * OBJECT_PTR_SIZE;
 
-        for (int i = 0x28; i < 0x48; i += 8)
+        for (int i = 0x20; i < 0x40; i += 8)
           IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", buffer + i, 8, *(uintptr_t *)(buffer + i)));
 
         IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to get %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
@@ -5857,6 +5855,7 @@ public:
       region_ptr_valid[1] = false;
       alloc_region_valid[0] = false;
       alloc_region_valid[1] = false;
+      alloc_top_valid = false;
 
       bool tag = false; // 决定是否需要分发处理该task
       do
@@ -5910,6 +5909,11 @@ public:
           *(uintptr_t *)addr = writeBufferData[i];
           addr += 8;
         }
+      }
+      if (alloc_top_valid)
+      {
+        *(uintptr_t *)(all_region_cache + REGION_TOP_OFFSET) = alloc_top_cache;
+        *(uintptr_t *)(all_region_cache + REGION_END_OFFSET) = alloc_end_cache;
       }
 
       // evacuate_live_objects(pss, worker_id);
