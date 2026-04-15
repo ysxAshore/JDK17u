@@ -5128,19 +5128,19 @@ public:
     // 计算age
     if (src_region_attr_type == ATTR_TYPE_YOUNG)
     {
-      // m.has_displaced_mark_helper
-      if ((old_mark & UNLOCKED_VALUE) == 0x0)
-      {
-        // m.display_mark_helper
-        bool has_monitor = old_mark & MONITOR_VALUE;
-        uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
-        uint64_t mark = *(uint64_t *)ptr;
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
-        age = (mark >> AGE_SHIFT) & AGE_MASK;
-      }
-      else
-        // m.age()
-        age = (old_mark >> AGE_SHIFT) & AGE_MASK;
+      //// m.has_displaced_mark_helper
+      // if ((old_mark & UNLOCKED_VALUE) == 0x0)
+      //{
+      //   // m.display_mark_helper
+      //   bool has_monitor = old_mark & MONITOR_VALUE;
+      //   uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
+      //   uint64_t mark = *(uint64_t *)ptr;
+      //   IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
+      //   age = (mark >> AGE_SHIFT) & AGE_MASK;
+      // }
+      // else
+      //  m.age()
+      age = (old_mark >> AGE_SHIFT) & AGE_MASK;
 
       uint threshold = *(uint *)((uintptr_t)pss + 0x17c);
       IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x17c, 4, threshold));
@@ -5312,17 +5312,17 @@ public:
     // 这里的dest attr type可能已经被修改了
     if (dest_attr_type == ATTR_TYPE_YOUNG)
     {
-      if ((old_mark & UNLOCKED_VALUE) == 0x0)
-      {
-        bool has_monitor = old_mark & MONITOR_VALUE;
-        uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
-        uint64_t mark = *(uint64_t *)ptr;
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
-        *(uint64_t *)ptr = (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT);
-        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", ptr, 8, (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT)));
-      }
-      else
-        new_mark = (old_mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & AGE_MASK) << AGE_SHIFT);
+      // if ((old_mark & UNLOCKED_VALUE) == 0x0)
+      //{
+      //   bool has_monitor = old_mark & MONITOR_VALUE;
+      //   uint64_t ptr = has_monitor ? old_mark ^ MONITOR_VALUE : old_mark;
+      //   uint64_t mark = *(uint64_t *)ptr;
+      //   IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
+      //   *(uint64_t *)ptr = (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT);
+      //   IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", ptr, 8, (mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & 15) << AGE_SHIFT)));
+      // }
+      // else
+      new_mark = (old_mark & ~AGE_MASK_IN_PLACE) | (((age + 1 < 15 ? age + 1 : age) & AGE_MASK) << AGE_SHIFT);
     }
     *(uint64_t *)(obj_ptr + MarkWordOff) = new_mark;
     IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", obj_ptr, 8, new_mark));
