@@ -135,8 +135,6 @@ public:
   G1ScanEvacuatedObjClosure *getScanner() { return &_scanner; }
 
   // @insert: debug function
-  template <class T>
-  void do_oop_evac_debug(T *p);
 
   G1ParScanThreadState(G1CollectedHeap *g1h,
                        G1RedirtyCardsQueueSet *rdcqs,

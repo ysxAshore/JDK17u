@@ -4273,6 +4273,72 @@ public:
     }
   }
 
+  void do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uintptr_t obj;
+    uintptr_t offset = *(uintptr_t *)src;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", src, 8, offset));
+
+    if (UseCompressedOops)
+    {
+      offset = (uint32_t)offset;
+      obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)offset << CompressedOops::shift());
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate compressed oop obj %lx %lx %x to get %lx", (uintptr_t)CompressedOops::base(), (uintptr_t)offset, CompressedOops::shift(), obj));
+    }
+    else
+      obj = offset;
+
+    uintptr_t regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
+    uint regionAttrShiftBy = pss->getRegionAttrShiftBy();
+
+    // 1. get region_attr_ptr
+    uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * 2;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
+    int8_t src_region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr + 1, 1, src_region_attr_type))
+    if (src_region_attr_type < 0)
+      return;
+
+    uintptr_t m_value = *(uintptr_t *)obj;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", obj, 8, m_value));
+
+    // m.is_marked
+    if ((m_value & 0x3) == 0x3)
+    {
+      uintptr_t clear_lock_bits = m_value & ~0x3;
+      obj = clear_lock_bits;
+    }
+    else
+      obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr, (oop)obj, markWord(m_value));
+    // obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr_type, obj, m_value, pss);
+
+    if (UseCompressedOops)
+    {
+      uintptr_t writeObj = (obj - (uintptr_t)CompressedOops::base()) >> CompressedOops::shift();
+      *(uint32_t *)src = writeObj;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to write %lx", src, 4, writeObj));
+    }
+    else
+    {
+      *(uintptr_t *)src = obj;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to write %lx", src, 8, obj));
+    }
+
+    if (((src ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
+      return;
+
+    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8);
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
+    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+
+    if (!typeIsYoung)
+    {
+      region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * 2;
+      aop_work_enqueue_card(region_attr_ptr, src, pss, worker_id);
+    }
+  }
+
   void do_partial_array(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t from_obj = src;
@@ -4336,14 +4402,8 @@ public:
 
   void dispatch_task(uintptr_t task, G1ParScanThreadState *pss, uint worker_id)
   {
-    if ((task & 0x3) == 0x1)
-    {
-      pss->do_oop_evac_debug((narrowOop *)(task - 0x1));
-    }
-    else if ((task & 0x3) == 0x0)
-    {
-      pss->do_oop_evac_debug((oop *)task);
-    }
+    if ((task & 0x3) != 0x2)
+      do_oop_evac(task - (task & 0x3), pss, worker_id);
     else
       do_partial_array(task - 0x2, pss, worker_id);
   }
