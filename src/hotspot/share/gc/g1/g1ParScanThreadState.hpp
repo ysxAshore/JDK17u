@@ -114,8 +114,29 @@ public:
   uintptr_t getTaskQueueBottomAddr() { return _task_queue->getBottomAddr(); }
   uintptr_t getTaskQueueAgeTopAddr() { return _task_queue->getAgeTopAddr(); }
 
+  // @insert get heap region info
+  uintptr_t getHeapRegionBiasedBase() { return _g1h->getHeapRegionBiasedBase(); }
+  uintptr_t getHeapRegionBase() { return _g1h->getHeapRegionBase(); }
+  uint getHeapRegionShiftBy() { return _g1h->getHeapRegionShiftBy(); }
+  uint getHeapRegionBias() { return _g1h->getHeapRegionBias(); }
+  uint getHeapRegionLength() { return _g1h->getHeapRegionLength(); }
+
+  // @insert get region attr info
+  uintptr_t getRegionAttrBiasedBase() { return _g1h->getRegionAttrBiasedBase(); }
+  uintptr_t getRegionAttrBase() { return _g1h->getRegionAttrBase(); }
+  uint getRegionAttrShiftBy() { return _g1h->getRegionAttrShiftBy(); }
+  uint getRegionAttrBias() { return _g1h->getRegionAttrBias(); }
+  uint getRegionAttrLength() { return _g1h->getRegionAttrLength(); }
+
+  // @insert: get rdc
+  G1RedirtyCardsLocalQueueSet *getRdcQueueSetPtr() { return &_rdc_local_qset; }
+
+  // @insert: get scanner
+  G1ScanEvacuatedObjClosure *getScanner() { return &_scanner; }
+
   // @insert: debug function
-  void dispatch_task_debug(uintptr_t task);
+  template <class T>
+  void do_oop_evac_debug(T *p);
 
   G1ParScanThreadState(G1CollectedHeap *g1h,
                        G1RedirtyCardsQueueSet *rdcqs,

@@ -3527,7 +3527,6 @@ void G1ParEvacuateFollowersClosure::do_void()
   do
   {
     EventGCPhaseParallel event;
-    pss->steal_and_trim_queue(queues());
     event.commit(GCId::current(), pss->worker_id(), G1GCPhaseTimes::phase_name(_phase));
   } while (!offer_termination());
 }
@@ -4017,10 +4016,26 @@ protected:
   TaskTerminator _terminator;
   uint _num_workers;
 
-  void evacuate_live_objects(G1ParScanThreadState *pss,
-                             uint worker_id,
-                             G1GCPhaseTimes::GCParPhases objcopy_phase,
-                             G1GCPhaseTimes::GCParPhases termination_phase)
+  uint *do_oop_region_cache;
+
+  bool *byte_about_valid;
+  uintptr_t *byte_map_cache;
+  uintptr_t *byte_map_base_cache;
+  bool *last_index_valid;
+  uintptr_t *last_index_cache;
+  bool *parScan_offset40_valid;
+  bool *parScan_offset20_valid;
+  uintptr_t *index_cache;
+  uintptr_t *buffer_cache;
+  uintptr_t *node_allocator_ptr_cache;
+  uintptr_t *offset30_cache;
+  uintptr_t *offset38_cache;
+
+  void
+  evacuate_live_objects(G1ParScanThreadState *pss,
+                        uint worker_id,
+                        G1GCPhaseTimes::GCParPhases objcopy_phase,
+                        G1GCPhaseTimes::GCParPhases termination_phase)
   {
     G1GCPhaseTimes *p = _g1h->phase_times();
 
@@ -4067,6 +4082,270 @@ public:
                                                 _terminator(num_workers, _task_queues),
                                                 _num_workers(num_workers)
   {
+    // initial cache variable
+    do_oop_region_cache = (uint *)calloc(_num_workers, 4);
+    byte_about_valid = (bool *)calloc(_num_workers, 1);
+    byte_map_base_cache = (uintptr_t *)calloc(_num_workers, 8);
+    byte_map_cache = (uintptr_t *)calloc(_num_workers, 8);
+    last_index_valid = (bool *)calloc(_num_workers, 1);
+    last_index_cache = (uintptr_t *)calloc(_num_workers, 8);
+    parScan_offset20_valid = (bool *)calloc(_num_workers, 1);
+    parScan_offset40_valid = (bool *)calloc(_num_workers, 1);
+    index_cache = (uintptr_t *)calloc(_num_workers, 8);
+    buffer_cache = (uintptr_t *)calloc(_num_workers, 8);
+    node_allocator_ptr_cache = (uintptr_t *)calloc(_num_workers, 8);
+    offset30_cache = (uintptr_t *)calloc(_num_workers, 8);
+    offset38_cache = (uintptr_t *)calloc(_num_workers, 8);
+  }
+#define TRACE 0
+#define IFDEF(cond, stmt) \
+  if (cond)               \
+    do                    \
+    {                     \
+      stmt;               \
+    } while (0);
+#define OopSize (UseCompressedOops ? 4 : 8)
+#define ArrayLenOff (UseCompressedClassPointers ? 12 : 16)
+#define ArrayElementOff (UseCompressedClassPointers ? 16 : 24)
+
+  uintptr_t buffer_node_allocate(uintptr_t allocator_ptr)
+  {
+    uintptr_t node = 0;
+    uintptr_t free_list_ptr = allocator_ptr + 0x80;
+    {
+      node = *(uintptr_t *)free_list_ptr;
+      IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to get %lx", free_list_ptr, 8, node));
+
+      uintptr_t new_top = 0;
+      if (node != 0)
+      {
+        new_top = *(uintptr_t *)(node + 0x8);
+        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to get %lx", node + 0x8, 8, new_top));
+      }
+      //@notice: 这里的cmpxchg(&_top, result, new_top)一定会返回_top == result result 不变
+      *(uintptr_t *)free_list_ptr = new_top;
+      IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %lx", free_list_ptr, 8, new_top));
+
+      if (node != 0)
+      {
+        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %x", node + 0x8, 8, 0));
+        *(uintptr_t *)(node + 0x8) = 0;
+      }
+    }
+    if (node == 0)
+    {
+      IFDEF(TRACE, tty->print_cr("needs interrupt to call buffernode_allocate"));
+      node = (uintptr_t)BufferNode::allocate(*(size_t *)(allocator_ptr));
+    }
+    return node + 0x10;
+  }
+
+  void aop_work_enqueue_card(uintptr_t region_attr_ptr, uintptr_t p, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uint8_t needs_remset_update = *(uint8_t *)(region_attr_ptr);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %x", region_attr_ptr, 1, needs_remset_update));
+
+    if (needs_remset_update == 0)
+      return;
+
+    uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + 0x60);
+
+    if (!byte_about_valid[worker_id])
+    {
+      byte_about_valid[worker_id] = true;
+      byte_map_cache[worker_id] = *(uintptr_t *)(ct_ptr + 0x38);
+      byte_map_base_cache[worker_id] = *(uintptr_t *)(ct_ptr + 0x40);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + 0x38, 8, byte_map_cache[worker_id]));
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", ct_ptr + 0x40, 8, byte_map_base_cache[worker_id]));
+    }
+
+    uintptr_t res = byte_map_base_cache[worker_id] + (p >> 9);
+    size_t card_index = res - byte_map_cache[worker_id];
+
+    last_index_cache[worker_id] = *(size_t *)((uintptr_t)pss + 0x1b0);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1b0, 8, *(size_t *)((uintptr_t)pss + 0x1b0)));
+
+    if (last_index_cache[worker_id] != card_index)
+    {
+      uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+
+      index_cache[worker_id] = *(size_t *)(rdc_local_qset_ptr + 0x30);
+      buffer_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x40);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x30, 8, index_cache[worker_id]));
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x40, 8, buffer_cache[worker_id]));
+
+      if (index_cache[worker_id] / 8 == 0)
+      {
+        uintptr_t node = 0;
+        uintptr_t node_allocator_ptr = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
+        if (buffer_cache[worker_id] != 0)
+        {
+          node = buffer_cache[worker_id] - 0x10;
+          *(uintptr_t *)node = 0;
+          *(uintptr_t *)(rdc_local_qset_ptr + 0x28) = *(size_t *)node_allocator_ptr;
+          *(uintptr_t *)(node + 0x8) = *(uintptr_t *)(rdc_local_qset_ptr + 0x18);
+          *(uintptr_t *)(rdc_local_qset_ptr + 0x18) = node;
+          if (*(uintptr_t *)(rdc_local_qset_ptr + 0x20) == 0)
+          {
+            *(uintptr_t *)(rdc_local_qset_ptr + 0x20) = node;
+          }
+        }
+        buffer_cache[worker_id] = buffer_node_allocate(node_allocator_ptr);
+        // buffer_cache[worker_id] = (uintptr_t)((BufferNode::Allocator *)node_allocator_ptr)->allocate();
+        *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buffer_cache[worker_id];
+        index_cache[worker_id] = *(size_t *)(node_allocator_ptr) * 8;
+      }
+
+      int idx = index_cache[worker_id] / 8 - 1;
+      *(size_t *)(buffer_cache[worker_id] + idx * 8) = res;
+      *(uintptr_t *)(rdc_local_qset_ptr + 0x30) = idx * 8;
+      *(uintptr_t *)((uintptr_t)pss + 0x1b0) = card_index;
+    }
+  }
+
+  void do_oop_work(uintptr_t src, uintptr_t dest, uint scanning_in_young, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uintptr_t heap_oop, obj;
+
+    if (UseCompressedOops)
+      heap_oop = *(uint32_t *)src;
+    else
+      heap_oop = *(uintptr_t *)(src);
+    IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%d bytes) to get %lx", src, 8, heap_oop));
+
+    if (heap_oop == 0)
+      return;
+
+    if (UseCompressedOops)
+      obj = (uintptr_t)CompressedOops::base() + ((uintptr_t)heap_oop << CompressedOops::shift());
+    else
+      obj = heap_oop;
+
+    // 15 in mechrevo r78845h 16 in others
+    // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
+
+    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * 2;
+    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
+    IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", region_attr_ptr + 1, 1, region_attr_type));
+
+    if (region_attr_type >= 0)
+    {
+      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+      uint localBot = *(uint *)bottom_addr;
+      uintptr_t elems = pss->getTaskQueueElemsBase();
+      *(uintptr_t *)(elems + localBot * 8) = UseCompressedOops ? dest + 0x1 : dest;
+      localBot = localBot + 1;
+      *(uint *)bottom_addr = localBot;
+    }
+    else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
+    {
+      // 不会是-3 optional
+      if (region_attr_type == -2)
+      {
+        uint region_bias = pss->getHeapRegionBias();
+        uint region_shiftby = pss->getHeapRegionShiftBy();
+        size_t pointer_delta = obj - ((uintptr_t)region_bias << region_shiftby);
+        uint region = pointer_delta >> HeapRegion::LogOfHRGrainBytes;
+        IFDEF(TRACE, tty->print_cr("do_oop_work: calculate %x %x %lx to get %x", region_bias, region_shiftby, obj, region));
+
+        uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
+        IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", bool_base + region, 1, *(bool *)(bool_base + region)));
+        if (region != do_oop_region_cache[worker_id])
+        {
+          if (*(bool *)(bool_base + region))
+          {
+            *(bool *)(bool_base + region) = false;
+            IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to write %x", bool_base + region, 1, 0));
+
+            uintptr_t region_attr = pss->getRegionAttrBase() + region * 2;
+            *(int8_t *)(region_attr + 1) = -1;
+            IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to write %x", region_attr + 1, 1, -1));
+          }
+          do_oop_region_cache[worker_id] = region;
+        }
+      }
+
+      if (scanning_in_young == 1)
+        return;
+
+      aop_work_enqueue_card(region_attr_ptr, dest, pss, worker_id);
+      // pss->enqueue_card_if_tracked(*(G1HeapRegionAttr *)region_attr_ptr, (oop *)dest, (oop)obj);
+    }
+  }
+
+  void do_partial_array(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uintptr_t from_obj = src;
+    uintptr_t m_value = *(uintptr_t *)from_obj;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", from_obj, 8, m_value));
+
+    uintptr_t clear_lock_bits = m_value & ~0x3;
+    uintptr_t to_obj = clear_lock_bits;
+
+    int array_length = *(int *)(from_obj + ArrayLenOff);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", from_obj + ArrayLenOff, 4, array_length));
+
+    int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1ec, 4, chunk_size));
+
+    uint start = *(int *)(to_obj + ArrayLenOff);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", to_obj + ArrayLenOff, 4, start));
+    *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to write %x", to_obj + ArrayLenOff, 4, start + chunk_size));
+
+    uint task_num = start / chunk_size;
+    uint remaining_tasks = (array_length - start) / chunk_size;
+    uint _task_limit = *(uint *)((uintptr_t)pss + 0x1f0);
+    uint _task_fanout = *(uint *)((uintptr_t)pss + 0x1f0 + 0x4);
+    uint max_pending = (_task_fanout - 1) * task_num + 1;
+    uint pending = MIN3(max_pending, remaining_tasks, _task_limit);
+    uint ncreate = MIN2(_task_fanout, MIN2(remaining_tasks, _task_limit + 1) - pending);
+
+    for (uint i = 0; i < ncreate; ++i)
+    {
+      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+      uint localBot = *(uint *)bottom_addr;
+      uintptr_t elems = pss->getTaskQueueElemsBase();
+      *(uintptr_t *)(elems + localBot * 8) = from_obj + 0x2;
+      localBot = localBot + 1;
+      *(uint *)bottom_addr = localBot;
+    }
+
+    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * 8);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
+
+    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+
+    uintptr_t scanning_in_young = typeIsYoung;
+
+    uintptr_t low = to_obj + ArrayElementOff + start * OopSize;
+    uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OopSize;
+    uintptr_t p = to_obj + ArrayElementOff;
+    uintptr_t q = p + *(uint *)(to_obj + ArrayLenOff) * OopSize;
+    if (p < low)
+      p = low;
+    if (q > high)
+      q = high;
+    while (p < q)
+    {
+      do_oop_work(p - to_obj + from_obj, p, scanning_in_young, pss, worker_id);
+      p += OopSize;
+    }
+  }
+
+  void dispatch_task(uintptr_t task, G1ParScanThreadState *pss, uint worker_id)
+  {
+    if ((task & 0x3) == 0x1)
+    {
+      pss->do_oop_evac_debug((narrowOop *)(task - 0x1));
+    }
+    else if ((task & 0x3) == 0x0)
+    {
+      pss->do_oop_evac_debug((oop *)task);
+    }
+    else
+      do_partial_array(task - 0x2, pss, worker_id);
   }
 
   void work(uint worker_id)
@@ -4074,11 +4353,8 @@ public:
     start_work(worker_id);
 
     {
-      ResourceMark rm;
-
       G1ParScanThreadState *pss = _per_thread_states->state_for_worker(worker_id);
       pss->set_ref_discoverer(_g1h->ref_processor_stw());
-
       scan_roots(pss, worker_id);
 
       // @notice: 可以插在这里进行HWGC工作 也就是evacuate_live_objects的功能卸载到硬件去做
@@ -4087,7 +4363,7 @@ public:
       uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       uint localBot = *(uint *)(bottom_addr);
-      tty->print_cr("thread %d, localBot is %d", worker_id, localBot);
+      tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot, (uintptr_t)pss);
 
       bool tag = false; // 决定是否需要分发处理该task
       do
@@ -4100,15 +4376,15 @@ public:
         {
           localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
           *(uint *)(bottom_addr) = localBot;
-          // @notice: 这里JVM 软件上是做了一个OrderAccess:fence() 阻止下面任何读取操作被重新排序到上面存储操作之前
           task = *(uintptr_t *)(elems + localBot * 8);
           tag = true;
         }
         if (tag)
-          pss->dispatch_task_debug(task);
+          dispatch_task(task, pss, worker_id);
       } while (tag);
 
       // evacuate_live_objects(pss, worker_id);
+      tty->print_cr("thread %d, work done", worker_id);
     }
 
     end_work(worker_id);

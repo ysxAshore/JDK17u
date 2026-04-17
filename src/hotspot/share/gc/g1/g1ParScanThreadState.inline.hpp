@@ -38,19 +38,24 @@
 #include "gc/g1/g1RemSet.hpp"
 #include "oops/access.inline.hpp"
 #include "oops/oop.inline.hpp"
+#include "gc/shared/taskqueue.hpp"
 
-inline void G1ParScanThreadState::push_on_queue(ScannerTask task) {
+inline void G1ParScanThreadState::push_on_queue(ScannerTask task)
+{
   verify_task(task);
   _task_queue->push(task);
 }
 
-bool G1ParScanThreadState::needs_partial_trimming() const {
+bool G1ParScanThreadState::needs_partial_trimming() const
+{
   return !_task_queue->overflow_empty() ||
          (_task_queue->size() > _stack_trim_upper_threshold);
 }
 
-void G1ParScanThreadState::trim_queue_partially() {
-  if (!needs_partial_trimming()) {
+void G1ParScanThreadState::trim_queue_partially()
+{
+  if (!needs_partial_trimming())
+  {
     return;
   }
 
@@ -61,7 +66,8 @@ void G1ParScanThreadState::trim_queue_partially() {
   _trim_ticks += Ticks::now() - start;
 }
 
-void G1ParScanThreadState::trim_queue() {
+void G1ParScanThreadState::trim_queue()
+{
   trim_queue_to_threshold(0);
   assert(_task_queue->overflow_empty(), "invariant");
   // Load of _age._fields._top in trim_queue_to_threshold must not pass
@@ -70,16 +76,19 @@ void G1ParScanThreadState::trim_queue() {
   assert(_task_queue->taskqueue_empty(), "invariant");
 }
 
-inline Tickspan G1ParScanThreadState::trim_ticks() const {
+inline Tickspan G1ParScanThreadState::trim_ticks() const
+{
   return _trim_ticks;
 }
 
-inline void G1ParScanThreadState::reset_trim_ticks() {
+inline void G1ParScanThreadState::reset_trim_ticks()
+{
   _trim_ticks = Tickspan();
 }
 
 template <typename T>
-inline void G1ParScanThreadState::remember_root_into_optional_region(T* p) {
+inline void G1ParScanThreadState::remember_root_into_optional_region(T *p)
+{
   oop o = RawAccess<IS_NOT_NULL>::oop_load(p);
   uint index = _g1h->heap_region_containing(o)->index_in_opt_cset();
   assert(index < _num_optional_regions,
@@ -88,7 +97,8 @@ inline void G1ParScanThreadState::remember_root_into_optional_region(T* p) {
 }
 
 template <typename T>
-inline void G1ParScanThreadState::remember_reference_into_optional_region(T* p) {
+inline void G1ParScanThreadState::remember_reference_into_optional_region(T *p)
+{
   oop o = RawAccess<IS_NOT_NULL>::oop_load(p);
   uint index = _g1h->heap_region_containing(o)->index_in_opt_cset();
   assert(index < _num_optional_regions,
@@ -97,23 +107,27 @@ inline void G1ParScanThreadState::remember_reference_into_optional_region(T* p) 
   verify_task(p);
 }
 
-G1OopStarChunkedList* G1ParScanThreadState::oops_into_optional_region(const HeapRegion* hr) {
+G1OopStarChunkedList *G1ParScanThreadState::oops_into_optional_region(const HeapRegion *hr)
+{
   assert(hr->index_in_opt_cset() < _num_optional_regions,
          "Trying to access optional region idx %u beyond " SIZE_FORMAT " " HR_FORMAT,
          hr->index_in_opt_cset(), _num_optional_regions, HR_FORMAT_PARAMS(hr));
   return &_oops_into_optional_regions[hr->index_in_opt_cset()];
 }
 
-template <class T> void G1ParScanThreadState::write_ref_field_post(T* p, oop obj) {
+template <class T>
+void G1ParScanThreadState::write_ref_field_post(T *p, oop obj)
+{
   assert(obj != NULL, "Must be");
-  if (HeapRegion::is_in_same_region(p, obj)) {
+  if (HeapRegion::is_in_same_region(p, obj))
+  {
     return;
   }
-  HeapRegion* from = _g1h->heap_region_containing(p);
-  if (!from->is_young()) {
+  HeapRegion *from = _g1h->heap_region_containing(p);
+  if (!from->is_young())
+  {
     enqueue_card_if_tracked(_g1h->region_attr(obj), p, obj);
   }
 }
-
 
 #endif // SHARE_GC_G1_G1PARSCANTHREADSTATE_INLINE_HPP
