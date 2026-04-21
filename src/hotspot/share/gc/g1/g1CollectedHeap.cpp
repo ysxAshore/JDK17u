@@ -4031,6 +4031,9 @@ protected:
   uintptr_t *offset30_cache;
   uintptr_t *offset38_cache;
 
+  bool *dest_attr_valid;
+  uint *dest_attr_cache;
+
   void
   evacuate_live_objects(G1ParScanThreadState *pss,
                         uint worker_id,
@@ -4096,6 +4099,8 @@ public:
     node_allocator_ptr_cache = (uintptr_t *)calloc(_num_workers, 8);
     offset30_cache = (uintptr_t *)calloc(_num_workers, 8);
     offset38_cache = (uintptr_t *)calloc(_num_workers, 8);
+    dest_attr_valid = (bool *)calloc(_num_workers, 1);
+    dest_attr_cache = (uint *)calloc(_num_workers, 4);
   }
 #define TRACE 0
 #define IFDEF(cond, stmt) \
@@ -4107,6 +4112,13 @@ public:
 #define OopSize (UseCompressedOops ? 4 : 8)
 #define ArrayLenOff (UseCompressedClassPointers ? 12 : 16)
 #define ArrayElementOff (UseCompressedClassPointers ? 16 : 24)
+/*----------------- KID --------------------------*/
+#define InstanceKlassID 0
+#define InstanceRefKlassID 1
+#define InstanceMirrorKlassID 2
+#define InstanceClassLoaderKlassID 3
+#define TypeArrayKlassID 4
+#define ObjectArrayKlassID 5
 
   uintptr_t buffer_node_allocate(uintptr_t allocator_ptr)
   {
@@ -4273,7 +4285,363 @@ public:
     }
   }
 
-  void do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  uintptr_t do_copy_to_survivor_space(uintptr_t src_region_attr_ptr, u_int16_t src_region_attr, uintptr_t old, uintptr_t m_value, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uintptr_t klass_ptr;
+    if (UseCompressedClassPointers)
+    {
+      uint offset = *(uint *)(old + 0x8);
+      klass_ptr = (uintptr_t)CompressedKlassPointers::base() + ((uintptr_t)offset << CompressedKlassPointers::shift());
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + 0x8, 4, offset));
+    }
+    else
+    {
+      klass_ptr = *(uintptr_t *)(old + 0x8);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old + 0x8, 8, klass_ptr));
+    }
+
+    uint64_t lh_kid = *(uint64_t *)(klass_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", klass_ptr + 0x8, 8, lh_kid));
+    int lh = (int)lh_kid;
+    int kid = lh_kid >> 32;
+    size_t size;
+
+    if (lh < 0)
+    {
+      int array_length = *(int *)(old + ArrayLenOff);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + ArrayLenOff, 4, array_length));
+      // lh[7:0]是log2(esz)
+      // lh[23:16]是hsz
+      size_t size_in_bytes = (array_length << (uint8_t)lh) + (uint8_t)(lh >> 16);
+      size = (size_t)(size_in_bytes & 0x7 ? (size_in_bytes >> LogHeapWordSize) + 1 : size_in_bytes >> LogHeapWordSize);
+    }
+    else if (lh > 0 && lh & 0x1 == 0)
+      size = lh >> LogHeapWordSize;
+    else
+    {
+      // size = ((oop)old)->size_given_klass((Klass *)klass_ptr);
+      if (kid == InstanceMirrorKlassID)
+        size = *(uint *)(old + java_lang_Class::get_oop_size_offset());
+      else
+        size = lh >> 3;
+    }
+
+    uint age = 0;
+    if (!dest_attr_valid[worker_id])
+    {
+      dest_attr_valid[worker_id] = true;
+      dest_attr_cache[worker_id] = *(uint *)((uintptr_t)pss + 0x178);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x178, 4, dest_attr_cache[worker_id]));
+    }
+    int8_t src_region_attr_type = (int8_t)(src_region_attr >> 8);
+    u_int16_t dest_attr = src_region_attr_type == 1 ? dest_attr_cache[worker_id] >> 16 : dest_attr_cache[worker_id] & 0xffff;
+    uintptr_t dest_attr_ptr = src_region_attr_type == 1 ? (uintptr_t)pss + 0x178 + 0x2 : (uintptr_t)pss + 0x178;
+    if (src_region_attr_type == 0)
+    {
+      if ((m_value & 0x1) == 0x0)
+      {
+        bool has_monitor = m_value & 0x2;
+        uint64_t ptr = has_monitor ? m_value ^ 0x2 : m_value;
+        uint64_t mark = *(uint64_t *)ptr;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
+        age = (mark >> 0x3) & 0x1111;
+      }
+      else
+        age = (m_value >> 0x3) & 0x1111;
+
+      uint threshold = *(uint *)((uintptr_t)pss + 0x17c);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x17c, 4, threshold));
+      if (age < threshold)
+      {
+        dest_attr = src_region_attr;
+        dest_attr_ptr = src_region_attr_ptr;
+      }
+    }
+
+    int8_t dest_attr_type = (int8_t)(dest_attr >> 8);
+    uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+    uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+    uintptr_t buffer;
+    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+
+    uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+    uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+    uintptr_t obj_ptr = 0;
+    if ((region_end - region_top) / 8 >= size)
+    {
+      obj_ptr = region_top;
+      *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
+    }
+    else
+      obj_ptr = 0;
+
+    G1HeapRegionAttr dest = G1HeapRegionAttr((G1HeapRegionAttr::region_type_t)dest_attr_type, (bool)(dest_attr & 0xff));
+
+    if (obj_ptr == 0)
+    {
+      // obj_ptr = (uintptr_t)pss->allocate_copy_slow(&dest, (oop)old, size, age, 0);
+      bool is_old = dest_attr_type == 1;
+      bool old_gen_is_full = *(bool *)((uintptr_t)pss + 0x1e8);
+      if (!(is_old && old_gen_is_full))
+      {
+        bool plab_refill_failed = false;
+        obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(dest, size, &plab_refill_failed, 0);
+        if (obj_ptr == 0)
+        {
+          bool plab_refill_in_old_failed = false;
+
+          // plab_allocate
+          buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * 8));
+          uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+          uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+          if ((region_end - region_top) / 8 >= size)
+          {
+            obj_ptr = region_top;
+            *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
+          }
+          else
+          {
+            G1HeapRegionAttr temp;
+            temp.set_old();
+            obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, 0);
+          }
+          if (plab_refill_failed)
+            *(uint *)((uintptr_t)pss + 0x17c) = 0;
+
+          // 这里会对后面的dest_attr有影响
+          *(int8_t *)(dest_attr_ptr + 1) = 1;
+          if (dest_attr_ptr == (uintptr_t)pss + 0x178)
+            ((uint8_t *)&dest_attr_cache[worker_id])[1] = 1;
+          else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
+            ((uint8_t *)&dest_attr_cache[worker_id])[3] = 1;
+          dest_attr_type = 1;
+          // obj_ptr = (uintptr_t)pss->allocate_in_next_plab_debug(&dest, size, plab_refill_in_old_failed, 0);
+          // if (dest.is_old())
+          //{
+          //   *(int8_t *)(dest_attr_ptr + 1) = 1;
+          //   if (dest_attr_ptr == (uintptr_t)pss + 0x178)
+          //     ((uint8_t *)&dest_attr_cache[worker_id])[1] = 1;
+          //   else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
+          //     ((uint8_t *)&dest_attr_cache[worker_id])[3] = 1;
+          //   dest_attr_type = 1;
+          // }
+          //      if (dest_attr_type == 0)
+          //      {
+
+          //      // plab_allocate
+          //      buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * 8));
+          //      uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
+          //      uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
+          //      if ((region_end - region_top) / 8 >= size)
+          //      {
+          //        obj_ptr = region_top;
+          //        *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
+          //      }
+          //      else
+          //      {
+          //      }
+
+          //    }
+        }
+      }
+    }
+
+    uintptr_t m = (obj_ptr & ~0x3) | 0x3;
+    // uintptr_t old_mark = Atomic::load((uintptr_t *)old);
+
+    // @todo need exclusive
+    uintptr_t old_mark = *(uintptr_t *)old;
+    uintptr_t forward_ptr = 0;
+    if (old_mark == m_value)
+    {
+      // Atomic::store((uintptr_t *)old, m);
+      *(uintptr_t *)old = m;
+      forward_ptr = 0;
+    }
+    else
+      forward_ptr = old_mark & ~0x3;
+
+    if (forward_ptr == 0)
+    {
+      // upadte age
+      uint64_t new_mark = m_value;
+      // 这里的dest attr type可能已经被修改了
+      if (dest_attr_type == 0)
+      {
+        if ((m_value & 0x1) == 0x0)
+        {
+          bool has_monitor = m_value & 0x2;
+          uint64_t ptr = has_monitor ? m_value ^ 0x2 : m_value;
+          uint64_t mark = *(uint64_t *)ptr;
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", ptr, 8, mark));
+          *(uint64_t *)ptr = (mark & ~(0x1111 << 3)) | (((age + 1 < 15 ? age + 1 : age) & 15) << 3);
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", ptr, 8, (mark & ~(0x1111 << 3)) | (((age + 1 < 15 ? age + 1 : age) & 15) << 3)));
+        }
+        else
+          new_mark = (m_value & ~(0x1111 << 3)) | (((age + 1 < 15 ? age + 1 : age) & 0x1111) << 3);
+      }
+      *(uint64_t *)obj_ptr = new_mark;
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", obj_ptr, 8, new_mark));
+
+      // 不重叠区域的复制
+      for (size_t i = 1; i < size; ++i)
+      {
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old + i * 8, 8, *(uintptr_t *)(old + i * 8)));
+        *(uintptr_t *)(obj_ptr + i * 8) = *(uintptr_t *)(old + i * 8);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", obj_ptr + i * 8, 8, *(uintptr_t *)(old + i * 8)));
+      }
+
+      uintptr_t scanning_in_young = dest_attr_type == 0;
+      // obj_array trace
+      if (lh < 0)
+      {
+        if (kid == ObjectArrayKlassID)
+        {
+          int array_length = *(int *)(old + ArrayLenOff);
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + ArrayLenOff, 4, array_length));
+
+          int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1ec, 4, chunk_size));
+
+          int end = array_length % chunk_size;
+          *(int *)(obj_ptr + ArrayLenOff) = end;
+          IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", obj_ptr + ArrayLenOff, 4, end));
+
+          uint step_index = end;
+          uint step_ncreate = array_length > end ? 1u : 0u;
+
+          for (uint i = 0; i < step_ncreate; ++i)
+          {
+            // push 这里只push taskqueue_t
+            uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
+
+            uint localBot = *(uint *)bottom_addr;
+            uintptr_t base = pss->getTaskQueueElemsBase();
+            *(uintptr_t *)(base + localBot * 8) = old + 0x2;
+
+            localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
+            *(uint *)bottom_addr = localBot;
+          }
+
+          uintptr_t low = obj_ptr + ArrayElementOff;
+          uintptr_t high = obj_ptr + ArrayElementOff + step_index * OopSize;
+          uintptr_t p = obj_ptr + ArrayElementOff;
+          uintptr_t q = p + array_length * OopSize;
+          if (p < low)
+            p = low;
+          if (q > high)
+            q = high;
+          while (p < q)
+          {
+            //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + OBJCLOSURE_OFFSET))->do_oop((oop *)p);
+            do_oop_work(p - obj_ptr + old, p, scanning_in_young, pss, worker_id);
+            p += OopSize;
+          }
+        }
+        return obj_ptr;
+      }
+      G1ScanEvacuatedObjClosure *scanner = (G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180);
+      G1ScanInYoungSetter x(scanner, scanning_in_young);
+
+      // oop_trace
+      int vtable_len = *(int *)(klass_ptr + 160);
+      int itable_len = *(int *)(klass_ptr + 300);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + 160, 4, vtable_len));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + 300, 4, itable_len));
+
+      int nonStaticOopMapSize = *(int *)(klass_ptr + 296);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", klass_ptr + 296, 4, nonStaticOopMapSize));
+
+      uintptr_t start_map = (uintptr_t)((uintptr_t *)(klass_ptr + 464) + vtable_len + itable_len);
+      uintptr_t end_map = start_map + nonStaticOopMapSize * 8;
+      while (start_map < end_map)
+      {
+        end_map -= 8;
+        int offset = *(int *)(end_map);
+        int count = *(int *)(end_map + 0x4);
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", end_map, 8, *(uintptr_t *)end_map));
+
+        uintptr_t start = obj_ptr + offset;
+        uintptr_t end = start + count * OopSize;
+        while (start < end)
+        {
+          end -= OopSize;
+          //((G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180))->do_oop((oop *)end);
+          do_oop_work(end - obj_ptr + old, end, scanning_in_young, pss, worker_id);
+        }
+      }
+      if (kid == InstanceMirrorKlassID)
+      {
+        uintptr_t static_start = obj_ptr + InstanceMirrorKlass::offset_of_static_fields();
+        uint staticCount = *(uint *)(old + java_lang_Class::get_static_oop_field_count_offset());
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", old + 40, 4, staticCount));
+
+        uintptr_t static_end = static_start + staticCount * OopSize;
+
+        while (static_start < static_end)
+        {
+          do_oop_work(static_start - obj_ptr + old, static_start, scanning_in_young, pss, worker_id);
+          static_start += OopSize;
+        }
+      }
+      else if (kid == InstanceRefKlassID)
+      {
+        uint discovered_offset;
+        uint referent_offset;
+        if (UseCompressedClassPointers & UseCompressedOops)
+        {
+          discovered_offset = 0x18;
+          referent_offset = 0xc;
+        }
+        else if (UseCompressedClassPointers)
+        {
+          discovered_offset = 0x1c;
+          referent_offset = 0x10;
+        }
+        else
+        {
+          discovered_offset = 0x28;
+          referent_offset = 0x10;
+        }
+        do_oop_work(old + discovered_offset, obj_ptr + discovered_offset, scanning_in_young, pss, worker_id);
+        do_oop_work(old + referent_offset, obj_ptr + referent_offset, scanning_in_young, pss, worker_id);
+        do_oop_work(old + discovered_offset, obj_ptr + discovered_offset, scanning_in_young, pss, worker_id);
+      }
+      // if (UseCompressedOops)
+      //   ((InstanceKlass *)klass_ptr)->oop_oop_iterate_reverse<narrowOop>((oop)obj_ptr, scanner);
+      // else
+      //   ((InstanceKlass *)klass_ptr)->oop_oop_iterate_reverse<oop>((oop)obj_ptr, scanner);
+      // if (kid == InstanceMirrorKlassID)
+      //{
+      //   if (UseCompressedOops)
+      //     ((InstanceMirrorKlass *)klass_ptr)->oop_oop_iterate_statics<narrowOop>((oop)obj_ptr, scanner);
+      //   else
+      //     ((InstanceMirrorKlass *)klass_ptr)->oop_oop_iterate_statics<oop>((oop)obj_ptr, scanner);
+      // }
+      // if (kid == InstanceRefKlassID)
+      //{
+      //  AlwaysContains always_c;
+      //  if (UseCompressedOops)
+      //    ((InstanceRefKlass *)klass_ptr)->oop_oop_iterate_ref_processing<narrowOop>((oop)obj_ptr, scanner, always_c);
+      //  else
+      //    ((InstanceRefKlass *)klass_ptr)->oop_oop_iterate_ref_processing<oop>((oop)obj_ptr, scanner, always_c);
+      //}
+      return obj_ptr;
+    }
+    else
+    {
+      uintptr_t region_bottom = *(uintptr_t *)(buffer + 0x28);
+      uintptr_t region_hard_end = *(uintptr_t *)(buffer + 0x40);
+      if (obj_ptr >= region_bottom && obj_ptr < region_hard_end)
+        *(uintptr_t *)(buffer + 0x30) = obj_ptr;
+      else
+        tty->print_cr("not in region");
+      return forward_ptr;
+    }
+  }
+
+  void
+  do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t obj;
     uintptr_t offset = *(uintptr_t *)src;
@@ -4294,9 +4662,9 @@ public:
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * 2;
     IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
-    int8_t src_region_attr_type = *(int8_t *)(region_attr_ptr + 1);
-    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr + 1, 1, src_region_attr_type))
-    if (src_region_attr_type < 0)
+    u_int16_t src_region_attr = *(u_int16_t *)region_attr_ptr;
+    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr, 2, src_region_attr))
+    if ((int8_t)(src_region_attr >> 8) < 0)
       return;
 
     uintptr_t m_value = *(uintptr_t *)obj;
@@ -4309,8 +4677,8 @@ public:
       obj = clear_lock_bits;
     }
     else
-      obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr, (oop)obj, markWord(m_value));
-    // obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr_type, obj, m_value, pss);
+      // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr,  (oop)obj, markWord(m_value));
+      obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr, obj, m_value, pss, worker_id);
 
     if (UseCompressedOops)
     {
@@ -4354,6 +4722,7 @@ public:
     int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
     IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1ec, 4, chunk_size));
 
+    // @todo: needs exclusive
     uint start = *(int *)(to_obj + ArrayLenOff);
     IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", to_obj + ArrayLenOff, 4, start));
     *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
@@ -4424,6 +4793,10 @@ public:
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       uint localBot = *(uint *)(bottom_addr);
       tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot, (uintptr_t)pss);
+      uint oop_size_offset = java_lang_Class::get_oop_size_offset();
+      uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset();
+      tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
+      tty->print_cr("ref offset %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset());
 
       bool tag = false; // 决定是否需要分发处理该task
       do

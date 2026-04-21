@@ -422,12 +422,11 @@ void G1ParScanThreadState::report_promotion_event(G1HeapRegionAttr const dest_at
   }
 }
 
-NOINLINE
-HeapWord *G1ParScanThreadState::allocate_copy_slow(G1HeapRegionAttr *dest_attr,
-                                                   oop old,
-                                                   size_t word_sz,
-                                                   uint age,
-                                                   uint node_index)
+NOINLINE HeapWord *G1ParScanThreadState::allocate_copy_slow(G1HeapRegionAttr *dest_attr,
+                                                            oop old,
+                                                            size_t word_sz,
+                                                            uint age,
+                                                            uint node_index)
 {
   HeapWord *obj_ptr = NULL;
   // Try slow-path allocation unless we're allocating old and old is already full.
