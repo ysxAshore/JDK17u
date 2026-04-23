@@ -127,7 +127,6 @@ inline HeapWord *G1AllocRegion::attempt_allocation_using_new_region_debug(size_t
                                                                           size_t desired_word_size,
                                                                           size_t *actual_word_size)
 {
-  tty->print_cr("ref %lx cmp %lx", *(uintptr_t *)FreeList_lock, (uintptr_t)Thread::current());
   retire(true /* fill_up */);
   HeapWord *result = new_alloc_region_and_allocate(desired_word_size, false /* force */);
   if (result != NULL)

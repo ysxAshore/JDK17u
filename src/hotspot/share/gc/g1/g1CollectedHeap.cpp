@@ -4293,6 +4293,121 @@ public:
     }
   }
 
+  uintptr_t par_allocate_iml(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_plab_size, uint worker_id)
+  {
+    uintptr_t alloc_result;
+    do
+    {
+      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
+      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, top));
+
+      uintptr_t end = *(uintptr_t *)(alloc_region + 0x8);
+      IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to get %lx", alloc_region + 0x8, 8, end));
+
+      size_t available = (end - top) / 8;
+      size_t want_to_allocate = available > desired_word_size ? desired_word_size : available;
+      if (want_to_allocate >= min_word_size)
+      {
+        uintptr_t new_top = top + want_to_allocate * 8;
+        uintptr_t result = *(uintptr_t *)(alloc_region + 0x10);
+        if (result == top)
+        {
+          *(uintptr_t *)(alloc_region + 0x10) = new_top;
+          IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + 0x10, 8, new_top));
+          *actual_plab_size = want_to_allocate;
+          return top;
+        }
+      }
+      else
+        return 0;
+    } while (true);
+  }
+
+  uintptr_t par_allocate(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, bool bot_updates, uint worker_id)
+  {
+    Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
+    MutexLocker ml(lock);
+
+    uintptr_t result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+
+    if (result != 0 && bot_updates)
+    {
+      uintptr_t blk_start = result;
+      uintptr_t blk_end = result + (*actual_word_size * 8);
+      uintptr_t bot_part_ptr = alloc_region + 0x20;
+      uintptr_t next_offset_threshold = *(uintptr_t *)(bot_part_ptr);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr, 8, next_offset_threshold));
+
+      if (blk_end > next_offset_threshold)
+      {
+        uintptr_t threshold = next_offset_threshold;
+        size_t index = *(uintptr_t *)(bot_part_ptr + 0x8);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x8, 8, index));
+
+        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x10, 8, bot_ptr));
+
+        uintptr_t array = *(uintptr_t *)(bot_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr + 0x10, 8, array));
+
+        size_t offset = (threshold - blk_start) >> 3;
+        *(uint8_t *)(array + index) = offset;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", array + index, 1, offset));
+
+        uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr, 8, reserved_start));
+
+        // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
+        size_t end_index = (blk_end - 8 - reserved_start) >> 9;
+
+        if (index + 1 <= end_index)
+        {
+          // @notice: blockOffsetTable.hpp -> BOTConstants::LogN_words = 6
+          uintptr_t rem_st = reserved_start + ((index + 1) << 6) * 8;
+          // @notice: blockOffsetTable.hpp -> BOTConstants::N_words = 64
+          uintptr_t rem_end = reserved_start + ((end_index << 6) + 64) * 8;
+
+          if (rem_st < rem_end)
+          {
+            size_t start_card = (rem_st - reserved_start) >> 9;
+            size_t end_card = (rem_end - 8 - reserved_start) >> 9;
+
+            if (start_card <= end_card)
+            {
+              size_t start_card_for_region = start_card;
+              u_char offset = 0xff; // const jubyte  max_jubyte  = (jubyte)-1;  // 0xFF       largest jubyte
+              // @notice: blockOffsetTable.hpp -> BOTConstants::N_powers = 14
+              for (uint i = 0; i < 14; i++)
+              {
+                // @notice: blockOffsetTable.hpp -> BOTConstants::LogBase = 4
+                size_t reach = start_card - 1 + ((1 << (4 * (i + 1))) - 1);
+                offset = 64 + i;
+                size_t num_cards = (reach >= end_card ? end_card : reach) - start_card_for_region + 1;
+                uintptr_t begin = array + start_card_for_region;
+                while (num_cards--)
+                {
+                  *(u_int8_t *)begin = offset;
+                  IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", begin, 1, offset));
+                  begin++;
+                }
+                start_card_for_region = reach + 1;
+                if (reach >= end_card)
+                  break;
+              }
+            }
+          }
+        }
+        index = end_index + 1;
+        threshold = reserved_start + ((end_index << 6) + 64) * 8;
+        *(uintptr_t *)(bot_part_ptr) = threshold;
+        *(uintptr_t *)(bot_part_ptr + 0x8) = index;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr, 8, threshold));
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr + 0x8, 8, index));
+      }
+    }
+    return result;
+  }
+
   uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uintptr_t allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t region_ptr = 0;
@@ -4310,13 +4425,15 @@ public:
     uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
 
     uintptr_t result = 0;
-    if (dest_attr_type == 0)
-      result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
-    // result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
-    else if (dest_attr_type == 1)
-      result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
-    // result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
 
+    MutexLocker x1(FreeList_lock, Mutex::_no_safepoint_check_flag);
+
+    if (dest_attr_type == 0)
+      // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
+      result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+    else if (dest_attr_type == 1)
+      // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+      result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
     if (result == 0)
     {
       uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
@@ -4324,15 +4441,15 @@ public:
       if (!is_full)
       {
         if (dest_attr_type == 0)
-          result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
-        // result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+          // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
+          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
         else if (dest_attr_type == 1)
-          result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
-        // result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
+          // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
         if (result == 0)
         {
           ++num;
-          MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
+          // result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
           result = (uintptr_t)((G1AllocRegion *)region_ptr)->attempt_allocation_using_new_region_debug(min_word_size, desired_word_size, actual_word_size);
           if (result == 0)
           {
@@ -4341,8 +4458,7 @@ public:
             else if (dest_attr_type == 1)
               *(bool *)(allocator_ptr + 0x11) = true;
           }
-
-        } // result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+        }
       }
     }
     return result;

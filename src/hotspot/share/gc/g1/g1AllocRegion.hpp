@@ -80,7 +80,6 @@ private:
   // == end()). When we don't have a valid active region we make
   // _alloc_region point to this. This allows us to skip checking
   // whether the _alloc_region is NULL or not.
-  static HeapRegion *_dummy_region;
 
   // After a region is allocated by alloc_new_region, this
   // method is used to set it as the active alloc_region
@@ -140,6 +139,9 @@ protected:
 
 public:
   static void setup(G1CollectedHeap *g1h, HeapRegion *dummy_region);
+
+  // @debug: get dummy region
+  static HeapRegion *_dummy_region;
 
   HeapRegion *get() const
   {

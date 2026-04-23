@@ -190,6 +190,9 @@ private:
 public:
   void prepare_region_for_full_compaction(HeapRegion *hr);
 
+  // @notice: insert new_gc_alloc_region
+  HeapRegion *new_gc_alloc_region(size_t word_size, G1HeapRegionAttr dest, uint node_index);
+
 private:
   // Rebuilds the region sets / lists so that they are repopulated to
   // reflect the contents of the heap. The only exception is the
@@ -529,7 +532,6 @@ private:
 
   // For GC alloc regions.
   bool has_more_regions(G1HeapRegionAttr dest);
-  HeapRegion *new_gc_alloc_region(size_t word_size, G1HeapRegionAttr dest, uint node_index);
   void retire_gc_alloc_region(HeapRegion *alloc_region,
                               size_t allocated_bytes, G1HeapRegionAttr dest);
 
