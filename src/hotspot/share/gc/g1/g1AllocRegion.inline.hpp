@@ -30,60 +30,73 @@
 #include "gc/g1/heapRegion.inline.hpp"
 
 #define assert_alloc_region(p, message)                                  \
-  do {                                                                   \
+  do                                                                     \
+  {                                                                      \
     assert((p), "[%s] %s c: %u b: %s r: " PTR_FORMAT " u: " SIZE_FORMAT, \
            _name, (message), _count, BOOL_TO_STR(_bot_updates),          \
            p2i(_alloc_region), _used_bytes_before);                      \
   } while (0)
 
-
-inline void G1AllocRegion::reset_alloc_region() {
+inline void G1AllocRegion::reset_alloc_region()
+{
   _alloc_region = _dummy_region;
 }
 
-inline HeapWord* G1AllocRegion::allocate(HeapRegion* alloc_region,
-                                         size_t word_size) {
+inline HeapWord *G1AllocRegion::allocate(HeapRegion *alloc_region,
+                                         size_t word_size)
+{
   assert(alloc_region != NULL, "pre-condition");
 
-  if (!_bot_updates) {
+  if (!_bot_updates)
+  {
     return alloc_region->allocate_no_bot_updates(word_size);
-  } else {
+  }
+  else
+  {
     return alloc_region->allocate(word_size);
   }
 }
 
-inline HeapWord* G1AllocRegion::par_allocate(HeapRegion* alloc_region, size_t word_size) {
+inline HeapWord *G1AllocRegion::par_allocate(HeapRegion *alloc_region, size_t word_size)
+{
   size_t temp;
   return par_allocate(alloc_region, word_size, word_size, &temp);
 }
 
-inline HeapWord* G1AllocRegion::par_allocate(HeapRegion* alloc_region,
+inline HeapWord *G1AllocRegion::par_allocate(HeapRegion *alloc_region,
                                              size_t min_word_size,
                                              size_t desired_word_size,
-                                             size_t* actual_word_size) {
+                                             size_t *actual_word_size)
+{
   assert(alloc_region != NULL, "pre-condition");
   assert(!alloc_region->is_empty(), "pre-condition");
 
-  if (!_bot_updates) {
+  if (!_bot_updates)
+  {
     return alloc_region->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
-  } else {
+  }
+  else
+  {
     return alloc_region->par_allocate(min_word_size, desired_word_size, actual_word_size);
   }
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation(size_t word_size) {
+inline HeapWord *G1AllocRegion::attempt_allocation(size_t word_size)
+{
   size_t temp;
   return attempt_allocation(word_size, word_size, &temp);
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation(size_t min_word_size,
+inline HeapWord *G1AllocRegion::attempt_allocation(size_t min_word_size,
                                                    size_t desired_word_size,
-                                                   size_t* actual_word_size) {
-  HeapRegion* alloc_region = _alloc_region;
+                                                   size_t *actual_word_size)
+{
+  HeapRegion *alloc_region = _alloc_region;
   assert_alloc_region(alloc_region != NULL, "not initialized properly");
 
-  HeapWord* result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size);
-  if (result != NULL) {
+  HeapWord *result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size);
+  if (result != NULL)
+  {
     trace("alloc", min_word_size, desired_word_size, *actual_word_size, result);
     return result;
   }
@@ -91,28 +104,34 @@ inline HeapWord* G1AllocRegion::attempt_allocation(size_t min_word_size,
   return NULL;
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation_locked(size_t word_size) {
+inline HeapWord *G1AllocRegion::attempt_allocation_locked(size_t word_size)
+{
   size_t temp;
   return attempt_allocation_locked(word_size, word_size, &temp);
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation_locked(size_t min_word_size,
+inline HeapWord *G1AllocRegion::attempt_allocation_locked(size_t min_word_size,
                                                           size_t desired_word_size,
-                                                          size_t* actual_word_size) {
-  HeapWord* result = attempt_allocation(min_word_size, desired_word_size, actual_word_size);
-  if (result != NULL) {
+                                                          size_t *actual_word_size)
+{
+  HeapWord *result = attempt_allocation(min_word_size, desired_word_size, actual_word_size);
+  if (result != NULL)
+  {
     return result;
   }
 
   return attempt_allocation_using_new_region(min_word_size, desired_word_size, actual_word_size);
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation_using_new_region(size_t min_word_size,
-                                                                    size_t desired_word_size,
-                                                                    size_t* actual_word_size) {
+inline HeapWord *G1AllocRegion::attempt_allocation_using_new_region_debug(size_t min_word_size,
+                                                                          size_t desired_word_size,
+                                                                          size_t *actual_word_size)
+{
+  tty->print_cr("ref %lx cmp %lx", *(uintptr_t *)FreeList_lock, (uintptr_t)Thread::current());
   retire(true /* fill_up */);
-  HeapWord* result = new_alloc_region_and_allocate(desired_word_size, false /* force */);
-  if (result != NULL) {
+  HeapWord *result = new_alloc_region_and_allocate(desired_word_size, false /* force */);
+  if (result != NULL)
+  {
     *actual_word_size = desired_word_size;
     trace("alloc locked (second attempt)", min_word_size, desired_word_size, *actual_word_size, result);
     return result;
@@ -121,12 +140,30 @@ inline HeapWord* G1AllocRegion::attempt_allocation_using_new_region(size_t min_w
   return NULL;
 }
 
-inline HeapWord* G1AllocRegion::attempt_allocation_force(size_t word_size) {
+inline HeapWord *G1AllocRegion::attempt_allocation_using_new_region(size_t min_word_size,
+                                                                    size_t desired_word_size,
+                                                                    size_t *actual_word_size)
+{
+  retire(true /* fill_up */);
+  HeapWord *result = new_alloc_region_and_allocate(desired_word_size, false /* force */);
+  if (result != NULL)
+  {
+    *actual_word_size = desired_word_size;
+    trace("alloc locked (second attempt)", min_word_size, desired_word_size, *actual_word_size, result);
+    return result;
+  }
+  trace("alloc locked failed", min_word_size, desired_word_size);
+  return NULL;
+}
+
+inline HeapWord *G1AllocRegion::attempt_allocation_force(size_t word_size)
+{
   assert_alloc_region(_alloc_region != NULL, "not initialized properly");
 
   trace("forcing alloc", word_size, word_size);
-  HeapWord* result = new_alloc_region_and_allocate(word_size, true /* force */);
-  if (result != NULL) {
+  HeapWord *result = new_alloc_region_and_allocate(word_size, true /* force */);
+  if (result != NULL)
+  {
     trace("alloc forced", word_size, word_size, word_size, result);
     return result;
   }
@@ -134,12 +171,15 @@ inline HeapWord* G1AllocRegion::attempt_allocation_force(size_t word_size) {
   return NULL;
 }
 
-inline HeapWord* MutatorAllocRegion::attempt_retained_allocation(size_t min_word_size,
+inline HeapWord *MutatorAllocRegion::attempt_retained_allocation(size_t min_word_size,
                                                                  size_t desired_word_size,
-                                                                 size_t* actual_word_size) {
-  if (_retained_alloc_region != NULL) {
-    HeapWord* result = par_allocate(_retained_alloc_region, min_word_size, desired_word_size, actual_word_size);
-    if (result != NULL) {
+                                                                 size_t *actual_word_size)
+{
+  if (_retained_alloc_region != NULL)
+  {
+    HeapWord *result = par_allocate(_retained_alloc_region, min_word_size, desired_word_size, actual_word_size);
+    if (result != NULL)
+    {
       trace("alloc retained", min_word_size, desired_word_size, *actual_word_size, result);
       return result;
     }

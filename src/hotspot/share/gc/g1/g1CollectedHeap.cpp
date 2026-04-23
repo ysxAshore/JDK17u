@@ -4034,6 +4034,10 @@ protected:
   bool *dest_attr_valid;
   uint *dest_attr_cache;
 
+  uintptr_t enable_thread;
+
+  size_t num;
+
   void
   evacuate_live_objects(G1ParScanThreadState *pss,
                         uint worker_id,
@@ -4101,6 +4105,10 @@ public:
     offset38_cache = (uintptr_t *)calloc(_num_workers, 8);
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
+
+    enable_thread = 0;
+
+    num = 0;
   }
 #define TRACE 0
 #define IFDEF(cond, stmt) \
@@ -4285,6 +4293,165 @@ public:
     }
   }
 
+  uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uintptr_t allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
+  {
+    uintptr_t region_ptr = 0;
+    if (dest_attr_type == 0)
+    {
+      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+      region_ptr = survivor_gc_alloc_ptr;
+    }
+    else if (dest_attr_type == 1)
+    {
+      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
+      region_ptr = old_gc_alloc_region_ptr;
+    }
+
+    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
+
+    uintptr_t result = 0;
+    if (dest_attr_type == 0)
+      result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
+    // result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+    else if (dest_attr_type == 1)
+      result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+    // result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
+
+    if (result == 0)
+    {
+      uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+      bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+      if (!is_full)
+      {
+        if (dest_attr_type == 0)
+          result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
+        // result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size);
+        else if (dest_attr_type == 1)
+          result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+        // result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true);
+        if (result == 0)
+        {
+          ++num;
+          MutexLocker x(FreeList_lock, Mutex::_no_safepoint_check_flag);
+          result = (uintptr_t)((G1AllocRegion *)region_ptr)->attempt_allocation_using_new_region_debug(min_word_size, desired_word_size, actual_word_size);
+          if (result == 0)
+          {
+            if (dest_attr_type == 0)
+              *(bool *)(allocator_ptr + 0x10) = true;
+            else if (dest_attr_type == 1)
+              *(bool *)(allocator_ptr + 0x11) = true;
+          }
+
+        } // result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size);
+      }
+    }
+    return result;
+  }
+
+  uintptr_t allocate_direct_or_new_plab(u_int16_t dest_attr, size_t word_sz, bool *plab_refill_failed, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
+  {
+    int8_t dest_attr_type = (int8_t)(dest_attr >> 8);
+    G1HeapRegionAttr dest = G1HeapRegionAttr((G1HeapRegionAttr::region_type_t)dest_attr_type, (bool)(dest_attr & 0xff));
+
+    uintptr_t plab_stats_ptr = 0;
+    if (dest_attr_type == 0)
+      plab_stats_ptr = (uintptr_t)_g1h + 0x250;
+    else if (dest_attr_type == 1)
+      plab_stats_ptr = (uintptr_t)_g1h + 0x2d0;
+
+    // @notice: single thread
+    uint no_of_gc_workers = _num_workers;
+
+    size_t gclab_word_size;
+    size_t min_size = 0x102;
+    size_t max_size = 0x40000;
+    // ResizePLAB = 1
+    size_t temp = *(size_t *)(plab_stats_ptr + 0x30) / no_of_gc_workers;
+    gclab_word_size = MIN2(MAX2(temp, min_size), max_size);
+    size_t plab_word_size = MIN2(max_size, gclab_word_size);
+    size_t required_in_plab = word_sz + 0x2;
+
+    uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
+    bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
+    if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
+    {
+      size_t actual_plab_size = 0;
+      // uintptr_t obj_ptr = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(dest, required_in_plab, plab_word_size, &actual_plab_size, 0);
+      uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, allocator_ptr, pss, worker_id);
+
+      uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
+      uintptr_t buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+
+      size_t result = 0;
+      uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
+      uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+      if (top_ptr < hard_end_ptr)
+      {
+        {
+          uintptr_t start = top_ptr;
+          size_t words = (hard_end_ptr - top_ptr) / 8;
+          uintptr_t klass_ptr = 0;
+          if (words >= (UseCompressedClassPointers ? 2 : 3))
+          {
+            size_t payload_size = words - (UseCompressedClassPointers ? 2 : 3);
+            size_t len = payload_size * 2;
+            *(int *)(start + ArrayLenOff) = len;
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + ArrayLenOff, 4, len));
+
+            klass_ptr = (uintptr_t)Universe::intArrayKlassObj();
+          }
+          else if (words > 0)
+            klass_ptr = (uintptr_t)vmClasses::Object_klass();
+          *(uintptr_t *)start = (0x0 | 0x1);
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", start, 8, 0x1));
+
+          if (UseCompressedClassPointers)
+          {
+            *(uint *)(start + 0x8) = (klass_ptr - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift();
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", start + 0x8, 4, (uint)(klass_ptr - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift()));
+          }
+          else
+          {
+            *(uintptr_t *)(start + 0x8) = klass_ptr;
+            IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + 0x8, 8, klass_ptr));
+          }
+        }
+        size_t remaining = (hard_end_ptr - top_ptr) / 8;
+        *(uintptr_t *)(buffer + 0x50) += remaining;
+      }
+
+      if (obj_ptr != 0)
+      {
+        *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
+        *(uintptr_t *)(buffer + 0x28) = obj_ptr;
+        *(uintptr_t *)(buffer + 0x30) = obj_ptr;
+        *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * 8;
+        *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * 8;
+        *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
+        uintptr_t obj = obj_ptr;
+        size_t delta = actual_plab_size - 2;
+        if (delta >= word_sz)
+          *(uintptr_t *)(buffer + 0x30) = obj + word_sz * 8;
+        else
+          obj = 0;
+        return obj;
+      }
+      else if (top_ptr < hard_end_ptr)
+      {
+        *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
+        *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
+        *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
+      }
+
+      *plab_refill_failed = true;
+    }
+
+    temp = 0;
+    // uintptr_t obj = (uintptr_t)((G1Allocator *)allocator_ptr)->par_allocate_during_gc(dest, word_sz, word_sz, &temp, 0);
+    uintptr_t obj = par_allocate_during_gc(dest_attr_type, word_sz, word_sz, &temp, allocator_ptr, pss, worker_id);
+    return obj;
+  }
+
   uintptr_t do_copy_to_survivor_space(uintptr_t src_region_attr_ptr, u_int16_t src_region_attr, uintptr_t old, uintptr_t m_value, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t klass_ptr;
@@ -4385,7 +4552,8 @@ public:
       if (!(is_old && old_gen_is_full))
       {
         bool plab_refill_failed = false;
-        obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(dest, size, &plab_refill_failed, 0);
+        // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(dest, size, &plab_refill_failed, 0);
+        obj_ptr = allocate_direct_or_new_plab(dest_attr, size, &plab_refill_failed, plab_allocator_ptr, pss, worker_id);
         if (obj_ptr == 0)
         {
           bool plab_refill_in_old_failed = false;
@@ -4403,7 +4571,8 @@ public:
           {
             G1HeapRegionAttr temp;
             temp.set_old();
-            obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, 0);
+            // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, 0);
+            obj_ptr = allocate_direct_or_new_plab(*(u_int16_t *)&temp, size, &plab_refill_in_old_failed, plab_allocator_ptr, pss, worker_id);
           }
           if (plab_refill_failed)
             *(uint *)((uintptr_t)pss + 0x17c) = 0;
@@ -4415,40 +4584,12 @@ public:
           else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
             ((uint8_t *)&dest_attr_cache[worker_id])[3] = 1;
           dest_attr_type = 1;
-          // obj_ptr = (uintptr_t)pss->allocate_in_next_plab_debug(&dest, size, plab_refill_in_old_failed, 0);
-          // if (dest.is_old())
-          //{
-          //   *(int8_t *)(dest_attr_ptr + 1) = 1;
-          //   if (dest_attr_ptr == (uintptr_t)pss + 0x178)
-          //     ((uint8_t *)&dest_attr_cache[worker_id])[1] = 1;
-          //   else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
-          //     ((uint8_t *)&dest_attr_cache[worker_id])[3] = 1;
-          //   dest_attr_type = 1;
-          // }
-          //      if (dest_attr_type == 0)
-          //      {
-
-          //      // plab_allocate
-          //      buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * 8));
-          //      uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-          //      uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-          //      if ((region_end - region_top) / 8 >= size)
-          //      {
-          //        obj_ptr = region_top;
-          //        *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
-          //      }
-          //      else
-          //      {
-          //      }
-
-          //    }
         }
       }
     }
 
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
     // uintptr_t old_mark = Atomic::load((uintptr_t *)old);
-
     // @todo need exclusive
     uintptr_t old_mark = *(uintptr_t *)old;
     uintptr_t forward_ptr = 0;
@@ -4640,8 +4781,7 @@ public:
     }
   }
 
-  void
-  do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  void do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t obj;
     uintptr_t offset = *(uintptr_t *)src;
@@ -4817,7 +4957,7 @@ public:
       } while (tag);
 
       // evacuate_live_objects(pss, worker_id);
-      tty->print_cr("thread %d, work done", worker_id);
+      tty->print_cr("thread %d, work done, mutex %lu", worker_id, num);
     }
 
     end_work(worker_id);
