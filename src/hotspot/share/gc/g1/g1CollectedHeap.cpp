@@ -4309,10 +4309,11 @@ public:
       if (want_to_allocate >= min_word_size)
       {
         uintptr_t new_top = top + want_to_allocate * 8;
-        uintptr_t result = *(uintptr_t *)(alloc_region + 0x10);
+        // uintptr_t result = *(uintptr_t *)(alloc_region + 0x10);
+        uintptr_t result = Atomic::cmpxchg((uintptr_t *)(alloc_region + 0x10), top, new_top);
         if (result == top)
         {
-          *(uintptr_t *)(alloc_region + 0x10) = new_top;
+          //*(uintptr_t *)(alloc_region + 0x10) = new_top;
           IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + 0x10, 8, new_top));
           *actual_plab_size = want_to_allocate;
           return top;
@@ -4325,9 +4326,6 @@ public:
 
   uintptr_t par_allocate(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, bool bot_updates, uint worker_id)
   {
-    Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
-    MutexLocker ml(lock);
-
     uintptr_t result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
 
     if (result != 0 && bot_updates)
@@ -4408,6 +4406,332 @@ public:
     return result;
   }
 
+  uintptr_t allocate_free_region(uint heap_region_type, uint node_index, uint worker_id)
+  {
+    uintptr_t hrm_ptr = (uintptr_t)_g1h + 0x130;
+    uintptr_t free_list_ptr = hrm_ptr + 0xb0;
+    bool from_head = (heap_region_type & 0x2) == 0;
+    uintptr_t numa_ptr = (uintptr_t)G1NUMA::numa();
+    uint active_node_ids = *(uint *)(numa_ptr + 0x18);
+    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x18, 4, active_node_ids));
+
+    uintptr_t res = 0;
+    if (node_index != UINT_MAX - 1 && active_node_ids > 1)
+    {
+      uint region_size = *(uint *)(numa_ptr + 0x20);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x20, 4, region_size));
+
+      uint page_size = *(uint *)(numa_ptr + 0x28);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x28, 4, page_size));
+
+      uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
+
+      uintptr_t cur;
+      size_t cur_depth = 0;
+      if (from_head)
+        cur = *(uintptr_t *)(free_list_ptr + 0x28);
+      else
+        cur = *(uintptr_t *)(free_list_ptr + 0x30);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + (from_head ? 0x28 : 0x30), 8, cur));
+
+      while (cur != 0 && cur_depth < max_search_depth)
+      {
+        if (node_index == *(uint *)(cur + 0x120))
+          break;
+        ++cur_depth;
+        uintptr_t temp = cur;
+        if (from_head)
+          cur = *(uintptr_t *)(cur + 0xd0);
+        else
+          cur = *(uintptr_t *)(cur + 0xd8);
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", temp + (from_head ? 0xd0 : 0xd8), 8, cur));
+      }
+
+      if (cur == 0 || cur_depth >= max_search_depth)
+        res = 0;
+      else
+      {
+        res = cur;
+        uintptr_t prev = *(uintptr_t *)(res + 0xd8);
+        uintptr_t next = *(uintptr_t *)(res + 0xd0);
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + 0xd8, 8, prev));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + 0xd0, 8, next));
+
+        if (prev == 0)
+          *(uintptr_t *)(free_list_ptr + 0x28) = next;
+        else
+          *(uintptr_t *)(prev + 0xd0) = next;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", prev == 0 ? free_list_ptr + 0x28 : prev + 0xd0, 8, next));
+
+        if (next == 0)
+          *(uintptr_t *)(free_list_ptr + 0x30) = prev;
+        else
+          *(uintptr_t *)(next + 0xd8) = prev;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", next == 0 ? free_list_ptr + 0x30 : next + 0xd8, 8, prev));
+
+        *(uintptr_t *)(res + 0xd0) = 0;
+        *(uintptr_t *)(res + 0xd8) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + 0xd8, 8, 0));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + 0xd0, 8, 0));
+      }
+    }
+
+    if (res == 0)
+    {
+      uint length = *(uint *)(free_list_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + 0x10, 4, length));
+      if (length == 0)
+        res = 0;
+      else
+      {
+        res = *(uintptr_t *)(free_list_ptr + (from_head ? 0x28 : 0x30));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", (free_list_ptr + (from_head ? 0x28 : 0x30)), 8, res));
+
+        uintptr_t res_conf = *(uintptr_t *)(res + (from_head ? 0xd0 : 0xd8));
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + (from_head ? 0xd0 : 0xd8), 8, res_conf));
+
+        *(uintptr_t *)(free_list_ptr + (from_head ? 0x28 : 0x30)) = res_conf;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", free_list_ptr + (from_head ? 0x28 : 0x30), 8, res_conf));
+
+        if (res_conf == 0)
+          *(uintptr_t *)(free_list_ptr + (from_head ? 0x30 : 0x28)) = 0;
+        else
+          *(uintptr_t *)(res_conf + (from_head ? 0xd8 : 0xd0)) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res_conf == 0 ? free_list_ptr + (from_head ? 0x30 : 0x28) : res_conf + (from_head ? 0xd8 : 0xd0), 8, 0));
+
+        *(uintptr_t *)(res + (from_head ? 0xd0 : 0xd8)) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? 0xd0 : 0xd8), 8, 0))
+      }
+    }
+
+    if (res != 0)
+    {
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + 0x38, 8, *(uintptr_t *)(free_list_ptr + 0x38)))
+      if (*(uintptr_t *)(free_list_ptr + 0x38) == res)
+        *(uintptr_t *)(free_list_ptr + 0x38) = 0;
+
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + 0x10, 4, *(uint *)(free_list_ptr + 0x10)));
+      *(uint *)(free_list_ptr + 0x10) -= 1;
+    }
+
+    return res;
+  }
+
+  uintptr_t new_region(uint heap_region_type, uint node_index, uint worker_id)
+  {
+    uintptr_t hrm_ptr = (uintptr_t)_g1h + 0x130;
+    uintptr_t res = allocate_free_region(heap_region_type, node_index, worker_id);
+
+    bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
+    IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x370, 1, expand_failure));
+
+    if (res == 0 && expand_failure)
+    {
+      IFDEF(TRACE, tty->print_cr("needs interrupt to call expand_single_region"));
+      if (_g1h->expand_single_region(node_index))
+        res = allocate_free_region(heap_region_type, node_index, worker_id);
+      else
+      {
+        *(bool *)((uintptr_t)_g1h + 0x370) = false;
+        IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to write %x", (uintptr_t)_g1h + 0x370, 1, 0));
+      }
+    }
+
+    return res;
+  }
+
+  uintptr_t new_gc_alloc_region(uintptr_t region_ptr, size_t word_sz, int8_t type, uint worker_id)
+  {
+    uint node_index = *(uint *)(region_ptr + 0x30);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", region_ptr + 0x30, 4, node_index));
+
+    uintptr_t survivor_ptr = (uintptr_t)_g1h + 0x3f8;
+    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + 0x8, 8, grow_array_ptr));
+
+    uintptr_t policy_ptr = *(uintptr_t *)((uintptr_t)_g1h + 0x430);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x430, 8, policy_ptr));
+
+    bool has_more_regions;
+    uint heap_region_type;
+    if (type == 1)
+      heap_region_type = 0x10;
+    else
+      heap_region_type = 0x3;
+
+    uintptr_t new_alloc_region = new_region(heap_region_type, node_index, worker_id);
+
+    if (new_alloc_region != 0)
+    {
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", (uintptr_t)new_alloc_region + 0xbc, 4, heap_region_type));
+      if (heap_region_type == 0x3)
+      {
+        *(uint *)(new_alloc_region + 0xbc) = 0x3;
+
+        int len = *(int *)(grow_array_ptr);
+        int max = *(int *)(grow_array_ptr + 0x4);
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr, 8, *(uintptr_t *)grow_array_ptr));
+
+        if (len == max)
+        {
+          IFDEF(TRACE, tty->print_cr("needs interrupt to call grow array grow"));
+          ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+        }
+        int idx = len;
+        ++len;
+        *(int *)(grow_array_ptr) = len;
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", grow_array_ptr, 4, len));
+
+        uintptr_t data_ptr = *(uintptr_t *)(grow_array_ptr + 0x8);
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", grow_array_ptr + 0x8, 8, data_ptr));
+
+        *(uintptr_t *)(data_ptr + idx * 8) = new_alloc_region;
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %lx", data_ptr + idx * 8, 8, new_alloc_region));
+      }
+      else
+        *(uint *)(new_alloc_region + 0xbc) = 0x10;
+
+      uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + 0xb0);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", new_alloc_region + 0xb0, 8, remset_ptr));
+
+      uint new_type = *(uint *)(new_alloc_region + 0xbc);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xbc, 4, new_type));
+
+      assert(new_type == heap_region_type, "error");
+      uintptr_t state_ptr = remset_ptr + 0xf0;
+      if ((new_type & 0x2) != 0)
+        *(uint *)state_ptr = 2;
+      else if ((new_type & 0x10) != 0)
+        *(uint *)state_ptr = 0;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", state_ptr, 4, *(uint *)state_ptr));
+
+      uint hrm_index = *(uint *)(new_alloc_region + 0xb8);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xb8, 4, hrm_index));
+
+      bool needs_remset_update = (new_type & 0x10) == 0;
+      uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
+      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
+
+      *(u_int8_t *)(region_attr_base + hrm_index * 2) = needs_remset_update;
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", region_attr_base + hrm_index * 2, 1, needs_remset_update));
+
+      return new_alloc_region;
+    }
+    return 0;
+  }
+
+  uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t alloc_region, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint worker_id)
+  {
+
+    int8_t type = *(int8_t *)(region_ptr + 0x40);
+    IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x40, 1, type));
+
+    if (alloc_region != dummy_region)
+    {
+      // fill up can set false
+      uintptr_t bottom = *(uintptr_t *)(alloc_region);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region, 8, bottom));
+
+      uintptr_t top = *(uintptr_t *)(alloc_region + 0x10);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, bottom));
+
+      size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
+
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
+      *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
+
+      if (type == 1)
+      {
+        uintptr_t old_set = (uintptr_t)_g1h + 0xa0;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
+        *(uint *)(old_set + 0x10) += 1;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", old_set + 0x10, 4, *(uint *)(old_set + 0x10)));
+      }
+      else
+      {
+        uintptr_t survivor_ptr = (uintptr_t)_g1h + 0x3f8;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
+        *(size_t *)(survivor_ptr + 0x10) += allocated_bytes;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
+      }
+
+      bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im));
+
+      if (during_im && allocated_bytes > 0)
+      {
+        uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x4e8, 8, cm));
+
+        uintptr_t start = *(uintptr_t *)(alloc_region + 0xe8);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0xe8, 8, start));
+
+        uintptr_t end = *(uintptr_t *)(alloc_region + 0x10);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, end));
+
+        uintptr_t root_regions_ptr = cm + 0xb0;
+        uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr, 8, root_regions_array));
+
+        uintptr_t idx = *(uintptr_t *)(root_regions_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr + 0x10, 8, idx));
+
+        uintptr_t mem_region = root_regions_array + idx * 0x10;
+
+        *(uintptr_t *)(mem_region) = start;
+        *(uintptr_t *)(mem_region + 0x8) = (end - start) / 8;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region, 8, start));
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", mem_region + 0x8, 8, (end - start) / 8));
+
+        *(uintptr_t *)(root_regions_ptr + 0x10) = idx + 1;
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", root_regions_ptr + 0x10, 8, idx + 1));
+      }
+
+      *(uintptr_t *)(region_ptr + 0x18) = 0;
+      *(uintptr_t *)(region_ptr + 0x8) = dummy_region;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + 0x18, 8, 0));
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x8, 8, dummy_region));
+    }
+
+    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size, type, worker_id);
+
+    if (new_alloc_region != 0)
+    {
+      *(uintptr_t *)(new_alloc_region + 0xa8) = 0;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + 0xa8, 8, 0));
+
+      uintptr_t bottom = *(uintptr_t *)(new_alloc_region);
+      uintptr_t top = *(uintptr_t *)(new_alloc_region + 0x10);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region, 8, bottom));
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", new_alloc_region + 0x10, 8, top));
+
+      *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x18, 8, top - bottom));
+
+      bool bot_updates = *(bool *)(region_ptr + 0x20);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x20, 1, bot_updates));
+
+      size_t temp;
+      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates, worker_id);
+
+      *(uintptr_t *)(region_ptr + 0x8) = new_alloc_region;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x8, 8, new_alloc_region));
+
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x10, 4, *(uint *)(region_ptr + 0x10)));
+      *(uint *)(region_ptr + 0x10) += 1;
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + 0x10, 4, *(uint *)(region_ptr + 0x10)));
+
+      if (result != 0)
+        *actual_word_size = desired_word_size;
+      return result;
+    }
+    else
+      return 0;
+  }
+
   uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uintptr_t allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t region_ptr = 0;
@@ -4426,14 +4750,15 @@ public:
 
     uintptr_t result = 0;
 
-    MutexLocker x1(FreeList_lock, Mutex::_no_safepoint_check_flag);
-
     if (dest_attr_type == 0)
-      // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
       result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
     else if (dest_attr_type == 1)
-      // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+    {
+      Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
+      MutexLocker ml(lock);
+
       result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+    }
     if (result == 0)
     {
       uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
@@ -4441,16 +4766,20 @@ public:
       if (!is_full)
       {
         if (dest_attr_type == 0)
-          // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate_no_bot_updates(min_word_size, desired_word_size, actual_word_size);
           result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
         else if (dest_attr_type == 1)
-          // result = (uintptr_t)((HeapRegion *)alloc_region)->par_allocate(min_word_size, desired_word_size, actual_word_size);
+        {
+          Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
+          MutexLocker ml(lock);
+
           result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+        }
         if (result == 0)
         {
           ++num;
-          // result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-          result = (uintptr_t)((G1AllocRegion *)region_ptr)->attempt_allocation_using_new_region_debug(min_word_size, desired_word_size, actual_word_size);
+          MutexLocker x1(FreeList_lock, Mutex::_no_safepoint_check_flag);
+
+          result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
           if (result == 0)
           {
             if (dest_attr_type == 0)
