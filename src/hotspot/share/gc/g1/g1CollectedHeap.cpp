@@ -4313,7 +4313,7 @@ public:
         uintptr_t result = Atomic::cmpxchg((uintptr_t *)(alloc_region + 0x10), top, new_top);
         if (result == top)
         {
-          //*(uintptr_t *)(alloc_region + 0x10) = new_top;
+          // *(uintptr_t *)(alloc_region + 0x10) = new_top;
           IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + 0x10, 8, new_top));
           *actual_plab_size = want_to_allocate;
           return top;
@@ -4750,30 +4750,32 @@ public:
 
     uintptr_t result = 0;
 
-    if (dest_attr_type == 0)
-      result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-    else if (dest_attr_type == 1)
     {
       Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
-      MutexLocker ml(lock);
+      MutexLocker ml(lock, Mutex::_no_safepoint_check_flag);
 
-      result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+      if (dest_attr_type == 0)
+        result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+      else if (dest_attr_type == 1)
+        result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
     }
+
     if (result == 0)
     {
       uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
       bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
       if (!is_full)
       {
-        if (dest_attr_type == 0)
-          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-        else if (dest_attr_type == 1)
         {
           Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
-          MutexLocker ml(lock);
+          MutexLocker ml(lock, Mutex::_no_safepoint_check_flag);
 
-          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+          if (dest_attr_type == 0)
+            result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+          else if (dest_attr_type == 1)
+            result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
         }
+
         if (result == 0)
         {
           ++num;
