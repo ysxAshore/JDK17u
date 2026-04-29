@@ -4034,9 +4034,7 @@ protected:
   bool *dest_attr_valid;
   uint *dest_attr_cache;
 
-  uintptr_t enable_thread;
-
-  size_t num;
+  volatile uintptr_t par_allocate_owner = 0;
 
   void
   evacuate_live_objects(G1ParScanThreadState *pss,
@@ -4105,10 +4103,6 @@ public:
     offset38_cache = (uintptr_t *)calloc(_num_workers, 8);
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
-
-    enable_thread = 0;
-
-    num = 0;
   }
 #define TRACE 0
 #define IFDEF(cond, stmt) \
@@ -4295,6 +4289,57 @@ public:
 
   uintptr_t par_allocate_iml(uintptr_t alloc_region, size_t min_word_size, size_t desired_word_size, size_t *actual_plab_size, uint worker_id)
   {
+    /*
+    template<>
+template<typename T>
+inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
+                                                T compare_value,
+                                                T exchange_value,
+                                                atomic_memory_order order) const {
+  STATIC_ASSERT(8 == sizeof(T));
+
+  // Note that cmpxchg guarantees a two-way memory barrier across
+  // the cmpxchg, so it's really a a 'fence_cmpxchg_fence' if not
+  // specified otherwise (see atomic.hpp).
+
+  T old_value;
+  const uint64_t zero = 0;
+
+  pre_membar(order);
+
+  __asm__ __volatile__ (
+    // simple guard
+    "   ld      %[old_value], 0(%[dest])                \n"
+    "   cmpd    %[compare_value], %[old_value]          \n"
+    "   bne-    2f                                      \n"
+    // atomic loop
+    "1:                                                 \n"
+    "   ldarx   %[old_value], %[dest], %[zero]          \n"
+    "   cmpd    %[compare_value], %[old_value]          \n"
+    "   bne-    2f                                      \n"
+    "   stdcx.  %[exchange_value], %[dest], %[zero]     \n"
+    "   bne-    1b                                      \n"
+    // exit
+    "2:                                                 \n"
+        // out
+        : [old_value]       "=&r"   (old_value),
+                            "=m"    (*dest)
+        // in
+        : [dest]            "b"     (dest),
+          [zero]            "r"     (zero),
+          [compare_value]   "r"     (compare_value),
+          [exchange_value]  "r"     (exchange_value),
+                            "m"     (*dest)
+        // clobber
+        : "cc",
+          "memory"
+        );
+
+    post_membar(order);
+
+    return old_value;
+  }
+  */
     uintptr_t alloc_result;
     do
     {
@@ -4313,7 +4358,7 @@ public:
         uintptr_t result = Atomic::cmpxchg((uintptr_t *)(alloc_region + 0x10), top, new_top);
         if (result == top)
         {
-          // *(uintptr_t *)(alloc_region + 0x10) = new_top;
+          //*(uintptr_t *)(alloc_region + 0x10) = new_top;
           IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + 0x10, 8, new_top));
           *actual_plab_size = want_to_allocate;
           return top;
@@ -4750,49 +4795,69 @@ public:
 
     uintptr_t result = 0;
 
+    while (true)
     {
-      Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
-      MutexLocker ml(lock, Mutex::_no_safepoint_check_flag);
-
-      if (dest_attr_type == 0)
-        result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-      else if (dest_attr_type == 1)
-        result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-    }
-
-    if (result == 0)
-    {
-      uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
-      bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
-      if (!is_full)
+      uintptr_t old = Atomic::cmpxchg(&par_allocate_owner, (uintptr_t)0, (uintptr_t)Thread::current());
+      if (old == 0)
       {
+        if (dest_attr_type == 0)
+          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+        else if (dest_attr_type == 1)
         {
-          Mutex *lock = (Mutex *)((HeapRegion *)alloc_region)->get_lock_ptr();
-          MutexLocker ml(lock, Mutex::_no_safepoint_check_flag);
-
-          if (dest_attr_type == 0)
-            result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-          else if (dest_attr_type == 1)
-            result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+          uintptr_t lock_ptr = ((HeapRegion *)alloc_region)->get_lock_ptr();
+          while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
+          {
+            tty->print_cr("wait par_allocate mutex");
+          }
+          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+          Atomic::store((uint *)(lock_ptr + 8), (uint)0);
         }
 
         if (result == 0)
         {
-          ++num;
-          MutexLocker x1(FreeList_lock, Mutex::_no_safepoint_check_flag);
-
-          result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-          if (result == 0)
+          uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+          bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+          if (!is_full)
           {
             if (dest_attr_type == 0)
-              *(bool *)(allocator_ptr + 0x10) = true;
+              result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
             else if (dest_attr_type == 1)
-              *(bool *)(allocator_ptr + 0x11) = true;
+            {
+              uintptr_t lock_ptr = ((HeapRegion *)alloc_region)->get_lock_ptr();
+              while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
+              {
+                tty->print_cr("wait par_allocate mutex");
+              }
+              result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+              Atomic::store((uint *)(lock_ptr + 8), (uint)0);
+            }
+
+            if (result == 0)
+            {
+              uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
+
+              while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
+              {
+                tty->print_cr("wait freelist_lock mutex");
+              }
+              *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
+
+              result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+              if (result == 0)
+              {
+                if (dest_attr_type == 0)
+                  *(bool *)(allocator_ptr + 0x10) = true;
+                else if (dest_attr_type == 1)
+                  *(bool *)(allocator_ptr + 0x11) = true;
+              }
+              Atomic::store((uint *)(freelist_lock_ptr + 8), (uint)0);
+            }
           }
         }
+        *(uintptr_t *)(&par_allocate_owner) = (uintptr_t)0;
+        return result;
       }
     }
-    return result;
   }
 
   uintptr_t allocate_direct_or_new_plab(u_int16_t dest_attr, size_t word_sz, bool *plab_refill_failed, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
@@ -5036,9 +5101,6 @@ public:
     }
 
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
-    // uintptr_t old_mark = Atomic::load((uintptr_t *)old);
-    // @todo need exclusive
-    uintptr_t old_mark = *(uintptr_t *)old;
     uintptr_t forward_ptr = 0;
     if (old_mark == m_value)
     {
@@ -5223,7 +5285,10 @@ public:
       if (obj_ptr >= region_bottom && obj_ptr < region_hard_end)
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
       else
+      {
         tty->print_cr("not in region");
+        Universe::heap()->fill_with_dummy_object((HeapWord *)obj_ptr, (HeapWord *)obj_ptr + size, true);
+      }
       return forward_ptr;
     }
   }
@@ -5404,7 +5469,7 @@ public:
       } while (tag);
 
       // evacuate_live_objects(pss, worker_id);
-      tty->print_cr("thread %d, work done, mutex %lu", worker_id, num);
+      tty->print_cr("thread %d, work done", worker_id);
     }
 
     end_work(worker_id);

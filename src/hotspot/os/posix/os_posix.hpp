@@ -35,20 +35,21 @@
 // is not defined as a constant as of Glibc 2.34.
 
 // File conventions
-static const char* file_separator() { return "/"; }
-static const char* line_separator() { return "\n"; }
-static const char* path_separator() { return ":"; }
+static const char *file_separator() { return "/"; }
+static const char *line_separator() { return "\n"; }
+static const char *path_separator() { return ":"; }
 
-class Posix {
+class Posix
+{
   friend class os;
 
 protected:
-  static void print_distro_info(outputStream* st);
-  static void print_rlimit_info(outputStream* st);
-  static void print_uname_info(outputStream* st);
-  static void print_libversion_info(outputStream* st);
-  static void print_load_average(outputStream* st);
-  static void print_uptime_info(outputStream* st);
+  static void print_distro_info(outputStream *st);
+  static void print_rlimit_info(outputStream *st);
+  static void print_uname_info(outputStream *st);
+  static void print_libversion_info(outputStream *st);
+  static void print_load_average(outputStream *st);
+  static void print_uptime_info(outputStream *st);
 
   // Minimum stack size a thread can be created with (allowing
   // the VM to completely create the thread and enter user code).
@@ -61,8 +62,8 @@ protected:
   static size_t _vm_internal_thread_min_stack_allowed;
 
 public:
-  static void init(void);  // early initialization - no logging available
-  static void init_2(void);// later initialization - logging available
+  static void init(void);   // early initialization - no logging available
+  static void init_2(void); // later initialization - logging available
 
   // Return default stack size for the specified thread type
   static size_t default_stack_size(os::ThreadType thr_type);
@@ -72,14 +73,14 @@ public:
 
   // Helper function; describes pthread attributes as short string. String is written
   // to buf with len buflen; buf is returned.
-  static char* describe_pthread_attr(char* buf, size_t buflen, const pthread_attr_t* attr);
+  static char *describe_pthread_attr(char *buf, size_t buflen, const pthread_attr_t *attr);
 
   // A safe implementation of realpath which will not cause a buffer overflow if the resolved path
   //   is longer than PATH_MAX.
   // On success, returns 'outbuf', which now contains the path.
   // On error, it will return NULL and set errno. The content of 'outbuf' is undefined.
   // On truncation error ('outbuf' too small), it will return NULL and set errno to ENAMETOOLONG.
-  static char* realpath(const char* filename, char* outbuf, size_t outbuflen);
+  static char *realpath(const char *filename, char *outbuf, size_t outbuflen);
 
   // Returns true if given uid is root.
   static bool is_root(uid_t uid);
@@ -91,21 +92,21 @@ public:
   // effective gid, or if given uid is root.
   static bool matches_effective_uid_and_gid_or_root(uid_t uid, gid_t gid);
 
-  static void print_umask(outputStream* st, mode_t umsk);
+  static void print_umask(outputStream *st, mode_t umsk);
 
-  static void print_user_info(outputStream* st);
+  static void print_user_info(outputStream *st);
 
   // Set PC into context. Needed for continuation after signal.
-  static address ucontext_get_pc(const ucontext_t* ctx);
-  static void    ucontext_set_pc(ucontext_t* ctx, address pc);
+  static address ucontext_get_pc(const ucontext_t *ctx);
+  static void ucontext_set_pc(ucontext_t *ctx, address pc);
 
-  static void to_RTC_abstime(timespec* abstime, int64_t millis);
+  static void to_RTC_abstime(timespec *abstime, int64_t millis);
 
-  static bool handle_stack_overflow(JavaThread* thread, address addr, address pc,
-                                    const void* ucVoid,
-                                    address* stub);
+  static bool handle_stack_overflow(JavaThread *thread, address addr, address pc,
+                                    const void *ucVoid,
+                                    address *stub);
 
-  static void print_active_locale(outputStream* st);
+  static void print_active_locale(outputStream *st);
 };
 
 /*
@@ -117,19 +118,22 @@ public:
  * don't call code that could leave the heap / memory in an inconsistent state,
  * or anything else where we are not in control if we suddenly jump out.
  */
-class ThreadCrashProtection : public StackObj {
+class ThreadCrashProtection : public StackObj
+{
 public:
-  static bool is_crash_protected(Thread* thr) {
+  static bool is_crash_protected(Thread *thr)
+  {
     return _crash_protection != NULL && _protected_thread == thr;
   }
 
   ThreadCrashProtection();
-  bool call(os::CrashProtectionCallback& cb);
+  bool call(os::CrashProtectionCallback &cb);
 
-  static void check_crash_protection(int signal, Thread* thread);
+  static void check_crash_protection(int signal, Thread *thread);
+
 private:
-  static Thread* _protected_thread;
-  static ThreadCrashProtection* _crash_protection;
+  static Thread *_protected_thread;
+  static ThreadCrashProtection *_crash_protection;
   void restore();
   sigjmp_buf _jmpbuf;
 };
@@ -141,27 +145,28 @@ private:
  * These event objects are type-stable and immortal - we never delete them.
  * Events are associated with a thread for the lifetime of the thread.
  */
-class PlatformEvent : public CHeapObj<mtSynchronizer> {
- private:
+class PlatformEvent : public CHeapObj<mtSynchronizer>
+{
+private:
   double cachePad[4];        // Increase odds that _mutex is sole occupant of cache line
   volatile int _event;       // Event count/permit: -1, 0 or 1
   volatile int _nParked;     // Indicates if associated thread is blocked: 0 or 1
   pthread_mutex_t _mutex[1]; // Native mutex for locking
-  pthread_cond_t  _cond[1];  // Native condition variable for blocking
+  pthread_cond_t _cond[1];   // Native condition variable for blocking
   double postPad[2];
 
- protected:       // TODO-FIXME: make dtor private
+protected:                                            // TODO-FIXME: make dtor private
   ~PlatformEvent() { guarantee(false, "invariant"); } // immortal so can't delete
 
- public:
+public:
   PlatformEvent();
   void park();
-  int  park(jlong millis);
+  int park(jlong millis);
   void unpark();
 
   // Use caution with reset() and fired() -- they may require MEMBARs
   void reset() { _event = 0; }
-  int  fired() { return _event; }
+  int fired() { return _event; }
 };
 
 // JSR166 support
@@ -176,19 +181,22 @@ class PlatformEvent : public CHeapObj<mtSynchronizer> {
 // API updates of course). But Parker methods use fastpaths that break that
 // level of encapsulation - so combining the two remains a future project.
 
-class PlatformParker {
+class PlatformParker
+{
   NONCOPYABLE(PlatformParker);
- protected:
-  enum {
+
+protected:
+  enum
+  {
     REL_INDEX = 0,
     ABS_INDEX = 1
   };
   volatile int _counter;
-  int _cur_index;  // which cond is in use: -1, 0, 1
+  int _cur_index; // which cond is in use: -1, 0, 1
   pthread_mutex_t _mutex[1];
-  pthread_cond_t  _cond[2]; // one for relative times and one for absolute
+  pthread_cond_t _cond[2]; // one for relative times and one for absolute
 
- public:
+public:
   PlatformParker();
   ~PlatformParker();
 };
@@ -208,92 +216,97 @@ class PlatformParker {
 // locking is not supported, which matches the expected semantics of the
 // VM Mutex class.
 
-class PlatformMutex : public CHeapObj<mtSynchronizer> {
+class PlatformMutex : public CHeapObj<mtSynchronizer>
+{
 #if PLATFORM_MONITOR_IMPL_INDIRECT
-  class Mutex : public CHeapObj<mtSynchronizer> {
-   public:
+  class Mutex : public CHeapObj<mtSynchronizer>
+  {
+  public:
     pthread_mutex_t _mutex;
-    Mutex* _next;
+    Mutex *_next;
 
     Mutex();
     ~Mutex();
   };
 
-  Mutex* _impl;
+  Mutex *_impl;
 
   static pthread_mutex_t _freelist_lock; // used for mutex and cond freelists
-  static Mutex* _mutex_freelist;
+  static Mutex *_mutex_freelist;
 
- protected:
+protected:
   class WithFreeListLocked;
-  pthread_mutex_t* mutex() { return &(_impl->_mutex); }
+  pthread_mutex_t *mutex() { return &(_impl->_mutex); }
 
- public:
-  PlatformMutex();              // Use freelist allocation of impl.
+public:
+  PlatformMutex(); // Use freelist allocation of impl.
   ~PlatformMutex();
 
-  static void init();           // Initialize the freelist.
+  static void init(); // Initialize the freelist.
 
 #else
 
   pthread_mutex_t _mutex;
 
- protected:
-  pthread_mutex_t* mutex() { return &_mutex; }
+protected:
+  pthread_mutex_t *mutex() { return &_mutex; }
 
- public:
-  static void init() {}         // Nothing needed for the non-indirect case.
+public:
+  static void init() {} // Nothing needed for the non-indirect case.
 
   PlatformMutex();
   ~PlatformMutex();
 
 #endif // PLATFORM_MONITOR_IMPL_INDIRECT
 
- private:
+private:
   NONCOPYABLE(PlatformMutex);
 
- public:
+public:
   void lock();
   void unlock();
   bool try_lock();
+  uintptr_t print_data_ptr() { return (uintptr_t)&_mutex.__data; }
 };
 
-class PlatformMonitor : public PlatformMutex {
+class PlatformMonitor : public PlatformMutex
+{
 #if PLATFORM_MONITOR_IMPL_INDIRECT
-  class Cond : public CHeapObj<mtSynchronizer> {
-   public:
+  class Cond : public CHeapObj<mtSynchronizer>
+  {
+  public:
     pthread_cond_t _cond;
-    Cond* _next;
+    Cond *_next;
 
     Cond();
     ~Cond();
   };
 
-  Cond* _impl;
+  Cond *_impl;
 
-  static Cond* _cond_freelist;
+  static Cond *_cond_freelist;
 
-  pthread_cond_t* cond() { return &(_impl->_cond); }
+  pthread_cond_t *cond() { return &(_impl->_cond); }
 
- public:
-  PlatformMonitor();            // Use freelist allocation of impl.
+public:
+  PlatformMonitor(); // Use freelist allocation of impl.
   ~PlatformMonitor();
 
 #else
 
   pthread_cond_t _cond;
-  pthread_cond_t* cond() { return &_cond; }
+  pthread_cond_t *cond() { return &_cond; }
 
- public:
+public:
   PlatformMonitor();
   ~PlatformMonitor();
 
 #endif // PLATFORM_MONITOR_IMPL_INDIRECT
 
- private:
+private:
   NONCOPYABLE(PlatformMonitor);
 
- public:
+public:
   int wait(jlong millis);
   void notify();
   void notify_all();
