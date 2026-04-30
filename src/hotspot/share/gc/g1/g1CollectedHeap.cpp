@@ -4810,7 +4810,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             tty->print_cr("wait par_allocate mutex");
           }
           result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-          Atomic::store((uint *)(lock_ptr + 8), (uint)0);
+          tty->print_cr("before reset: par allocate lock %u", *(uint *)(lock_ptr + 8));
+          if (*(uint *)(lock_ptr + 8) > 1)
+            ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
+          else
+            *(uint *)(lock_ptr + 8) = 0;
         }
 
         if (result == 0)
@@ -4829,16 +4833,20 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 tty->print_cr("wait par_allocate mutex");
               }
               result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-              Atomic::store((uint *)(lock_ptr + 8), (uint)0);
+              tty->print_cr("before reset: par allocate lock %u", *(uint *)(lock_ptr + 8));
+              if (*(uint *)(lock_ptr + 8) > 1)
+                ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
+              else
+                *(uint *)(lock_ptr + 8) = 0;
             }
 
             if (result == 0)
             {
               uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
 
+              tty->print_cr("freelist lock %u", *(uint *)(freelist_lock_ptr + 8));
               while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
               {
-                tty->print_cr("wait freelist_lock mutex");
               }
               *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
 
@@ -4850,7 +4858,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 else if (dest_attr_type == 1)
                   *(bool *)(allocator_ptr + 0x11) = true;
               }
-              Atomic::store((uint *)(freelist_lock_ptr + 8), (uint)0);
+              tty->print_cr("before reset: freelist lock %u", *(uint *)(freelist_lock_ptr + 8));
+              if (*(uint *)(freelist_lock_ptr + 8) > 1)
+                FreeList_lock->unlock();
+              else
+                *(uint *)(freelist_lock_ptr + 8) = 0;
             }
           }
         }
@@ -5102,12 +5114,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
     uintptr_t forward_ptr = 0;
+    uintptr_t old_mark = Atomic::cmpxchg((uintptr_t *)old, m_value, m);
     if (old_mark == m_value)
-    {
-      // Atomic::store((uintptr_t *)old, m);
-      *(uintptr_t *)old = m;
       forward_ptr = 0;
-    }
     else
       forward_ptr = old_mark & ~0x3;
 
