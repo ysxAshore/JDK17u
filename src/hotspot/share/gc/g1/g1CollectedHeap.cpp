@@ -4018,6 +4018,9 @@ protected:
 
   uint *do_oop_region_cache;
 
+  uint *obj_shift_cache;
+  int8_t *attr_type_cache;
+
   bool *byte_about_valid;
   uintptr_t *byte_map_cache;
   uintptr_t *byte_map_base_cache;
@@ -4036,11 +4039,10 @@ protected:
 
   volatile uintptr_t par_allocate_owner = 0;
 
-  void
-  evacuate_live_objects(G1ParScanThreadState *pss,
-                        uint worker_id,
-                        G1GCPhaseTimes::GCParPhases objcopy_phase,
-                        G1GCPhaseTimes::GCParPhases termination_phase)
+  void evacuate_live_objects(G1ParScanThreadState *pss,
+                             uint worker_id,
+                             G1GCPhaseTimes::GCParPhases objcopy_phase,
+                             G1GCPhaseTimes::GCParPhases termination_phase)
   {
     G1GCPhaseTimes *p = _g1h->phase_times();
 
@@ -4089,6 +4091,10 @@ public:
   {
     // initial cache variable
     do_oop_region_cache = (uint *)calloc(_num_workers, 4);
+
+    obj_shift_cache = (uint *)calloc(_num_workers, 4);
+    attr_type_cache = (int8_t *)calloc(_num_workers, 1);
+
     byte_about_valid = (bool *)calloc(_num_workers, 1);
     byte_map_base_cache = (uintptr_t *)calloc(_num_workers, 8);
     byte_map_cache = (uintptr_t *)calloc(_num_workers, 8);
@@ -4101,6 +4107,7 @@ public:
     node_allocator_ptr_cache = (uintptr_t *)calloc(_num_workers, 8);
     offset30_cache = (uintptr_t *)calloc(_num_workers, 8);
     offset38_cache = (uintptr_t *)calloc(_num_workers, 8);
+
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
   }
@@ -4250,12 +4257,16 @@ public:
 
     // 15 in mechrevo r78845h 16 in others
     // tty->print_cr("1---%x", HeapRegion::LogOfHRGrainBytes);
+    uint shift_obj = obj >> pss->getRegionAttrShiftBy();
+    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + shift_obj * 2;
+    if (shift_obj != obj_shift_cache[worker_id])
+    {
+      obj_shift_cache[worker_id] = shift_obj;
+      attr_type_cache[worker_id] = *(int8_t *)(region_attr_ptr + 1);
+      IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", region_attr_ptr + 1, 1, attr_type_cache[worker_id]));
+    }
 
-    uintptr_t region_attr_ptr = pss->getRegionAttrBiasedBase() + (obj >> pss->getRegionAttrShiftBy()) * 2;
-    int8_t region_attr_type = *(int8_t *)(region_attr_ptr + 1);
-    IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", region_attr_ptr + 1, 1, region_attr_type));
-
-    if (region_attr_type >= 0)
+    if (attr_type_cache[worker_id] >= 0)
     {
       uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
       uint localBot = *(uint *)bottom_addr;
@@ -4267,18 +4278,17 @@ public:
     else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
     {
       // 不会是-3 optional
-      if (region_attr_type == -2)
+      if (attr_type_cache[worker_id] == -2)
       {
         uint region_bias = pss->getHeapRegionBias();
         uint region_shiftby = pss->getHeapRegionShiftBy();
         size_t pointer_delta = obj - ((uintptr_t)region_bias << region_shiftby);
         uint region = pointer_delta >> HeapRegion::LogOfHRGrainBytes;
-        IFDEF(TRACE, tty->print_cr("do_oop_work: calculate %x %x %lx to get %x", region_bias, region_shiftby, obj, region));
 
-        uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
-        IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", bool_base + region, 1, *(bool *)(bool_base + region)));
         if (region != do_oop_region_cache[worker_id])
         {
+          uintptr_t bool_base = _g1h->getHumongousReclaimCandidatesBoolBase();
+          IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to get %x", bool_base + region, 1, *(bool *)(bool_base + region)));
           if (*(bool *)(bool_base + region))
           {
             *(bool *)(bool_base + region) = false;
