@@ -4176,44 +4176,57 @@ public:
     uintptr_t res = byte_map_base_cache[worker_id] + (p >> 9);
     size_t card_index = res - byte_map_cache[worker_id];
 
-    last_index_cache[worker_id] = *(size_t *)((uintptr_t)pss + 0x1b0);
-    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1b0, 8, *(size_t *)((uintptr_t)pss + 0x1b0)));
+    if (!last_index_valid[worker_id])
+    {
+      last_index_valid[worker_id] = true;
+      last_index_cache[worker_id] = *(size_t *)((uintptr_t)pss + 0x1b0);
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x1b0, 8, *(size_t *)((uintptr_t)pss + 0x1b0)));
+    }
 
     if (last_index_cache[worker_id] != card_index)
     {
       uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
 
-      index_cache[worker_id] = *(size_t *)(rdc_local_qset_ptr + 0x30);
-      buffer_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x40);
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x30, 8, index_cache[worker_id]));
-      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x40, 8, buffer_cache[worker_id]));
+      if (!parScan_offset40_valid[worker_id])
+      {
+        parScan_offset40_valid[worker_id] = true;
+        index_cache[worker_id] = *(size_t *)(rdc_local_qset_ptr + 0x30);
+        buffer_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x40);
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x30, 8, index_cache[worker_id]));
+        IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x40, 8, buffer_cache[worker_id]));
+      }
 
       if (index_cache[worker_id] / 8 == 0)
       {
         uintptr_t node = 0;
-        uintptr_t node_allocator_ptr = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
+        if (!parScan_offset20_valid[worker_id])
+        {
+          parScan_offset20_valid[worker_id] = true;
+          node_allocator_ptr_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x8);
+          offset30_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x18);
+          offset38_cache[worker_id] = *(uintptr_t *)(rdc_local_qset_ptr + 0x20);
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x8, 8, node_allocator_ptr_cache[worker_id]));
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x18, 8, offset30_cache[worker_id]));
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", rdc_local_qset_ptr + 0x20, 8, offset38_cache[worker_id]));
+        }
+
         if (buffer_cache[worker_id] != 0)
         {
           node = buffer_cache[worker_id] - 0x10;
           *(uintptr_t *)node = 0;
-          *(uintptr_t *)(rdc_local_qset_ptr + 0x28) = *(size_t *)node_allocator_ptr;
-          *(uintptr_t *)(node + 0x8) = *(uintptr_t *)(rdc_local_qset_ptr + 0x18);
-          *(uintptr_t *)(rdc_local_qset_ptr + 0x18) = node;
-          if (*(uintptr_t *)(rdc_local_qset_ptr + 0x20) == 0)
-          {
-            *(uintptr_t *)(rdc_local_qset_ptr + 0x20) = node;
-          }
+          *(uintptr_t *)(node + 0x8) = offset30_cache[worker_id];
+          offset30_cache[worker_id] = node;
+          if (offset38_cache[worker_id] == 0)
+            offset38_cache[worker_id] = node;
         }
-        buffer_cache[worker_id] = buffer_node_allocate(node_allocator_ptr);
-        // buffer_cache[worker_id] = (uintptr_t)((BufferNode::Allocator *)node_allocator_ptr)->allocate();
-        *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buffer_cache[worker_id];
-        index_cache[worker_id] = *(size_t *)(node_allocator_ptr) * 8;
+        buffer_cache[worker_id] = buffer_node_allocate(node_allocator_ptr_cache[worker_id]);
+        index_cache[worker_id] = *(size_t *)(node_allocator_ptr_cache[worker_id]) * 8;
       }
 
       int idx = index_cache[worker_id] / 8 - 1;
       *(size_t *)(buffer_cache[worker_id] + idx * 8) = res;
-      *(uintptr_t *)(rdc_local_qset_ptr + 0x30) = idx * 8;
-      *(uintptr_t *)((uintptr_t)pss + 0x1b0) = card_index;
+      index_cache[worker_id] = idx * 8;
+      last_index_cache[worker_id] = card_index;
     }
   }
 
@@ -5479,6 +5492,21 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
       // evacuate_live_objects(pss, worker_id);
       tty->print_cr("thread %d, work done", worker_id);
+
+      if (last_index_valid[worker_id])
+        *(size_t *)((uintptr_t)pss + 0x1b0) = last_index_cache[worker_id];
+      if (parScan_offset40_valid[worker_id])
+      {
+        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+        *(size_t *)(rdc_local_qset_ptr + 0x30) = index_cache[worker_id];
+        *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buffer_cache[worker_id];
+      }
+      if (parScan_offset20_valid[worker_id])
+      {
+        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+        *(size_t *)(rdc_local_qset_ptr + 0x18) = offset30_cache[worker_id];
+        *(uintptr_t *)(rdc_local_qset_ptr + 0x20) = offset38_cache[worker_id];
+      }
     }
 
     end_work(worker_id);
