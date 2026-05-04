@@ -4037,6 +4037,9 @@ protected:
   bool *dest_attr_valid;
   uint *dest_attr_cache;
 
+  uint *heap_oop_shift_cache;
+  bool *heap_type_is_young;
+
   uint *localBot;
 
   volatile uintptr_t par_allocate_owner = 0;
@@ -4112,6 +4115,9 @@ public:
 
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
+
+    heap_oop_shift_cache = (uint *)calloc(_num_workers, 4);
+    heap_type_is_young = (bool *)calloc(_num_workers, 1);
 
     localBot = (uint *)calloc(_num_workers, 4);
   }
@@ -5422,13 +5428,17 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       localBot[worker_id] = localBot[worker_id] + 1;
     }
 
-    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * 8);
-    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
+    uint to_oop_shift = to_obj >> pss->getHeapRegionShiftBy();
+    if (heap_oop_shift_cache[worker_id] != to_oop_shift)
+    {
+      heap_oop_shift_cache[worker_id] = to_oop_shift;
+      uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + to_oop_shift * 8);
+      IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + to_oop_shift * 8, 8, heap_region));
+      heap_type_is_young[worker_id] = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+      IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+    }
 
-    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
-    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
-
-    uintptr_t scanning_in_young = typeIsYoung;
+    uintptr_t scanning_in_young = heap_type_is_young[worker_id];
 
     uintptr_t low = to_obj + ArrayElementOff + start * OopSize;
     uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OopSize;
