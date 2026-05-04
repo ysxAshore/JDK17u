@@ -4037,6 +4037,8 @@ protected:
   bool *dest_attr_valid;
   uint *dest_attr_cache;
 
+  uint *localBot;
+
   volatile uintptr_t par_allocate_owner = 0;
 
   void evacuate_live_objects(G1ParScanThreadState *pss,
@@ -4110,6 +4112,8 @@ public:
 
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
+
+    localBot = (uint *)calloc(_num_workers, 4);
   }
 #define TRACE 0
 #define IFDEF(cond, stmt) \
@@ -4268,12 +4272,9 @@ public:
 
     if (attr_type_cache[worker_id] >= 0)
     {
-      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
-      uint localBot = *(uint *)bottom_addr;
       uintptr_t elems = pss->getTaskQueueElemsBase();
-      *(uintptr_t *)(elems + localBot * 8) = UseCompressedOops ? dest + 0x1 : dest;
-      localBot = localBot + 1;
-      *(uint *)bottom_addr = localBot;
+      *(uintptr_t *)(elems + localBot[worker_id] * 8) = UseCompressedOops ? dest + 0x1 : dest;
+      localBot[worker_id] = localBot[worker_id] + 1;
     }
     else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
     {
@@ -5195,14 +5196,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           for (uint i = 0; i < step_ncreate; ++i)
           {
             // push 这里只push taskqueue_t
-            uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
-
-            uint localBot = *(uint *)bottom_addr;
             uintptr_t base = pss->getTaskQueueElemsBase();
-            *(uintptr_t *)(base + localBot * 8) = old + 0x2;
-
-            localBot = (localBot + 1) & (TASKQUEUE_SIZE - 1);
-            *(uint *)bottom_addr = localBot;
+            *(uintptr_t *)(base + localBot[worker_id] * 8) = old + 0x2;
+            localBot[worker_id] = (localBot[worker_id] + 1) & (TASKQUEUE_SIZE - 1);
           }
 
           uintptr_t low = obj_ptr + ArrayElementOff;
@@ -5406,7 +5402,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     int chunk_size = *(int *)((uintptr_t)pss + 0x1ec);
     IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1ec, 4, chunk_size));
 
-    // @todo: needs exclusive
     uint start = *(int *)(to_obj + ArrayLenOff);
     IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", to_obj + ArrayLenOff, 4, start));
     *(int *)(to_obj + ArrayLenOff) = start + chunk_size;
@@ -5422,12 +5417,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     for (uint i = 0; i < ncreate; ++i)
     {
-      uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
-      uint localBot = *(uint *)bottom_addr;
       uintptr_t elems = pss->getTaskQueueElemsBase();
-      *(uintptr_t *)(elems + localBot * 8) = from_obj + 0x2;
-      localBot = localBot + 1;
-      *(uint *)bottom_addr = localBot;
+      *(uintptr_t *)(elems + localBot[worker_id] * 8) = from_obj + 0x2;
+      localBot[worker_id] = localBot[worker_id] + 1;
     }
 
     uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (to_obj >> pss->getHeapRegionShiftBy()) * 8);
@@ -5475,8 +5467,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t elems = pss->getTaskQueueElemsBase();
       uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
-      uint localBot = *(uint *)(bottom_addr);
-      tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot, (uintptr_t)pss);
+      localBot[worker_id] = *(uint *)(bottom_addr);
+      tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot[worker_id], (uintptr_t)pss);
       uint oop_size_offset = java_lang_Class::get_oop_size_offset();
       uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset();
       tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
@@ -5486,20 +5478,19 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       do
       {
         uintptr_t task;
-        localBot = *(uint *)(bottom_addr);
-        if (localBot <= 0)
+        if (localBot[worker_id] <= 0)
           tag = false;
         else
         {
-          localBot = (localBot - 1) & (TASKQUEUE_SIZE - 1);
-          *(uint *)(bottom_addr) = localBot;
-          task = *(uintptr_t *)(elems + localBot * 8);
+          localBot[worker_id] = (localBot[worker_id] - 1) & (TASKQUEUE_SIZE - 1);
+          task = *(uintptr_t *)(elems + localBot[worker_id] * 8);
           tag = true;
         }
         if (tag)
           dispatch_task(task, pss, worker_id);
       } while (tag);
 
+      *(uint *)bottom_addr = localBot[worker_id];
       // evacuate_live_objects(pss, worker_id);
       tty->print_cr("thread %d, work done", worker_id);
 
