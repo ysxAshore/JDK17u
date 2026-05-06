@@ -4040,6 +4040,18 @@ protected:
   uint *heap_oop_shift_cache;
   bool *heap_type_is_young;
 
+  bool **plab_buffer_valid;
+  uintptr_t **plab_buffer_ptr_cache;
+  bool **plab_top_end_valid;
+  uintptr_t **plab_top_cache;
+  uintptr_t **plab_end_cache;
+
+  uintptr_t *src_region_ptr_cache;
+  uint16_t *src_region_attr_cache;
+
+  uint *heap_oop_shift_cache2;
+  bool *heap_type_is_young2;
+
   uint *localBot;
 
   volatile uintptr_t par_allocate_owner = 0;
@@ -4116,8 +4128,29 @@ public:
     dest_attr_valid = (bool *)calloc(_num_workers, 1);
     dest_attr_cache = (uint *)calloc(_num_workers, 4);
 
+    plab_buffer_valid = (bool **)calloc(_num_workers, sizeof(bool *));
+    plab_buffer_ptr_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+    plab_top_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+    plab_end_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+    plab_top_end_valid = (bool **)calloc(_num_workers, sizeof(bool *));
+
+    for (uint i = 0; i < num_workers; ++i)
+    {
+      plab_buffer_valid[i] = (bool *)calloc(2, sizeof(bool));
+      plab_buffer_ptr_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+      plab_top_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+      plab_end_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+      plab_top_end_valid[i] = (bool *)calloc(2, sizeof(bool));
+    }
+
     heap_oop_shift_cache = (uint *)calloc(_num_workers, 4);
     heap_type_is_young = (bool *)calloc(_num_workers, 1);
+
+    src_region_ptr_cache = (uintptr_t *)calloc(_num_workers, 8);
+    src_region_attr_cache = (uint16_t *)calloc(_num_workers, 2);
+
+    heap_oop_shift_cache2 = (uint *)calloc(_num_workers, 4);
+    heap_type_is_young2 = (bool *)calloc(_num_workers, 1);
 
     localBot = (uint *)calloc(_num_workers, 4);
   }
@@ -5080,23 +5113,77 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     }
 
     int8_t dest_attr_type = (int8_t)(dest_attr >> 8);
+    int idx = dest_attr_type;
     uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
     uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
-    uintptr_t buffer;
-    buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
-
-    uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-    uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-    uintptr_t obj_ptr = 0;
-    if ((region_end - region_top) / 8 >= size)
+    if (!plab_buffer_valid[worker_id][idx])
     {
-      obj_ptr = region_top;
-      *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
+      plab_buffer_valid[worker_id][idx] = true;
+
+      plab_buffer_ptr_cache[worker_id][idx] = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8)));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8), 8, plab_buffer_ptr_cache[worker_id][idx]));
+    }
+    if (!plab_top_end_valid[worker_id][idx])
+    {
+      uintptr_t buffer = plab_buffer_ptr_cache[worker_id][idx];
+
+      uintptr_t old_top = plab_top_cache[worker_id][idx];
+      uintptr_t old_end = plab_end_cache[worker_id][idx];
+
+      uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
+      uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
+
+      IFDEF(TRACE, tty->print_cr(
+                       "do_copy2survivor: access %lx (%d bytes) to get %lx",
+                       buffer + 0x30, 8, new_top));
+
+      IFDEF(TRACE, tty->print_cr(
+                       "do_copy2survivor: access %lx (%d bytes) to get %lx",
+                       buffer + 0x38, 8, new_end));
+
+      // cache 原本为 0，认为是首次初始化，不退出
+      bool cache_was_zero = old_top == 0 && old_end == 0;
+
+      // cache 原本不是 0，但读取前后不一致，退出 / 报错
+      if (!cache_was_zero && (old_top != new_top || old_end != new_end) && plab_top_end_valid[worker_id][idx])
+      {
+        tty->print_cr(
+            "line %d PLAB cache mismatch: worker=%u idx=%u buffer %lx"
+            "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
+            __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
+
+        // 根据你所在函数的返回类型选择一种：
+        // return NULL;
+        // return false;
+        // fatal("PLAB cache inconsistent");
+        assert(true, "PLAB cache inconsistent");
+      }
+
+      plab_top_cache[worker_id][idx] = new_top;
+      plab_end_cache[worker_id][idx] = new_end;
+
+      plab_top_end_valid[worker_id][idx] = true;
+    }
+
+    uintptr_t obj_ptr = 0;
+    if ((plab_end_cache[worker_id][idx] - plab_top_cache[worker_id][idx]) / 8 >= size)
+    {
+      obj_ptr = plab_top_cache[worker_id][idx];
+      plab_top_cache[worker_id][idx] = obj_ptr + size * 8;
+      *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = plab_top_cache[worker_id][idx];
+      int other = idx == 0 ? 1 : 0;
+      if (plab_top_end_valid[worker_id][other] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
+        plab_top_cache[worker_id][other] = plab_top_cache[worker_id][idx];
     }
     else
+    {
       obj_ptr = 0;
-
-    G1HeapRegionAttr dest = G1HeapRegionAttr((G1HeapRegionAttr::region_type_t)dest_attr_type, (bool)(dest_attr & 0xff));
+      plab_top_end_valid[worker_id][idx] = false;
+      int other = idx == 0 ? 1 : 0;
+      if (plab_top_end_valid[worker_id][other] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
+        plab_top_end_valid[worker_id][other] = false;
+    }
 
     if (obj_ptr == 0)
     {
@@ -5113,26 +5200,87 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           bool plab_refill_in_old_failed = false;
 
           // plab_allocate
-          buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + 1 * 8));
-          uintptr_t region_top = *(uintptr_t *)(buffer + 0x30);
-          uintptr_t region_end = *(uintptr_t *)(buffer + 0x38);
-          if ((region_end - region_top) / 8 >= size)
+          idx = 1;
+          if (!plab_buffer_valid[worker_id][idx])
           {
-            obj_ptr = region_top;
-            *(uintptr_t *)(buffer + 0x30) = region_top + size * 8;
+            plab_buffer_valid[worker_id][idx] = true;
+
+            plab_buffer_ptr_cache[worker_id][idx] = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8)));
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8), 8, plab_buffer_ptr_cache[worker_id][idx]));
+          }
+          if (!plab_top_end_valid[worker_id][idx])
+          {
+            uintptr_t buffer = plab_buffer_ptr_cache[worker_id][idx];
+
+            uintptr_t old_top = plab_top_cache[worker_id][idx];
+            uintptr_t old_end = plab_end_cache[worker_id][idx];
+
+            uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
+            uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
+
+            IFDEF(TRACE, tty->print_cr(
+                             "do_copy2survivor: access %lx (%d bytes) to get %lx",
+                             buffer + 0x30, 8, new_top));
+
+            IFDEF(TRACE, tty->print_cr(
+                             "do_copy2survivor: access %lx (%d bytes) to get %lx",
+                             buffer + 0x38, 8, new_end));
+
+            // cache 原本为 0，认为是首次初始化，不退出
+            bool cache_was_zero = old_top == 0 && old_end == 0;
+
+            // cache 原本不是 0，但读取前后不一致，退出 / 报错
+            if (!cache_was_zero && (old_top != new_top || old_end != new_end) && plab_top_end_valid[worker_id][idx])
+            {
+              tty->print_cr(
+                  "line %d PLAB cache mismatch: worker=%u idx=%u buffer %lx"
+                  "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
+                  __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
+
+              // 根据你所在函数的返回类型选择一种：
+              // return NULL;
+              // return false;
+              // fatal("PLAB cache inconsistent");
+              assert(true, "PLAB cache inconsistent");
+            }
+
+            plab_top_cache[worker_id][idx] = new_top;
+            plab_end_cache[worker_id][idx] = new_end;
+
+            plab_top_end_valid[worker_id][idx] = true;
+          }
+
+          if ((plab_end_cache[worker_id][idx] - plab_top_cache[worker_id][idx]) / 8 >= size)
+          {
+            obj_ptr = plab_top_cache[worker_id][idx];
+            plab_top_cache[worker_id][idx] = obj_ptr + size * 8;
+            *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = plab_top_cache[worker_id][idx];
+            if (plab_top_end_valid[worker_id][0] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
+              plab_top_cache[worker_id][0] = plab_top_cache[worker_id][idx];
           }
           else
           {
+            obj_ptr = 0;
+            plab_top_end_valid[worker_id][idx] = false;
+            if (plab_top_end_valid[worker_id][0] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
+              plab_top_cache[worker_id][0] = false;
+
             G1HeapRegionAttr temp;
             temp.set_old();
             // obj_ptr = (uintptr_t)((G1PLABAllocator *)plab_allocator_ptr)->allocate_direct_or_new_plab(temp, size, &plab_refill_in_old_failed, 0);
             obj_ptr = allocate_direct_or_new_plab(*(u_int16_t *)&temp, size, &plab_refill_in_old_failed, plab_allocator_ptr, pss, worker_id);
           }
+
           if (plab_refill_failed)
             *(uint *)((uintptr_t)pss + 0x17c) = 0;
 
           // 这里会对后面的dest_attr有影响
           *(int8_t *)(dest_attr_ptr + 1) = 1;
+
+          if (dest_attr_ptr == src_region_ptr_cache[worker_id])
+            ((uint8_t *)&src_region_attr_cache[worker_id])[1] = 1;
+
           if (dest_attr_ptr == (uintptr_t)pss + 0x178)
             ((uint8_t *)&dest_attr_cache[worker_id])[1] = 1;
           else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
@@ -5314,10 +5462,17 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     }
     else
     {
-      uintptr_t region_bottom = *(uintptr_t *)(buffer + 0x28);
-      uintptr_t region_hard_end = *(uintptr_t *)(buffer + 0x40);
+      uintptr_t region_bottom = *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x28);
+      uintptr_t region_hard_end = *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x40);
       if (obj_ptr >= region_bottom && obj_ptr < region_hard_end)
-        *(uintptr_t *)(buffer + 0x30) = obj_ptr;
+      {
+        int other = idx == 1 ? 0 : 1;
+        if (plab_top_end_valid[worker_id][idx])
+          plab_top_cache[worker_id][idx] = obj_ptr;
+        if (plab_top_end_valid[worker_id][other] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
+          plab_top_cache[worker_id][other] = obj_ptr;
+        *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = obj_ptr;
+      }
       else
       {
         tty->print_cr("not in region");
@@ -5327,7 +5482,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     }
   }
 
-  void do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  void
+  do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t obj;
     uintptr_t offset = *(uintptr_t *)src;
@@ -5347,10 +5503,13 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     // 1. get region_attr_ptr
     uintptr_t region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * 2;
-    IFDEF(TRACE, tty->print_cr("do_oop_evac: caculate region attr ptr %lx %lx %x to get %lx", regionAttrBiasedBase, obj, regionAttrShiftBy, region_attr_ptr));
-    u_int16_t src_region_attr = *(u_int16_t *)region_attr_ptr;
-    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr, 2, src_region_attr))
-    if ((int8_t)(src_region_attr >> 8) < 0)
+    if (region_attr_ptr != src_region_ptr_cache[worker_id])
+    {
+      src_region_ptr_cache[worker_id] = region_attr_ptr;
+      src_region_attr_cache[worker_id] = *(u_int16_t *)region_attr_ptr;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", region_attr_ptr, 2, src_region_attr_cache[worker_id]))
+    }
+    if ((int8_t)(src_region_attr_cache[worker_id] >> 8) < 0)
       return;
 
     uintptr_t m_value = *(uintptr_t *)obj;
@@ -5364,7 +5523,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     }
     else
       // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr,  (oop)obj, markWord(m_value));
-      obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr, obj, m_value, pss, worker_id);
+      obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr_cache[worker_id], obj, m_value, pss, worker_id);
 
     if (UseCompressedOops)
     {
@@ -5381,12 +5540,17 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     if (((src ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
       return;
 
-    uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8);
-    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
-    bool typeIsYoung = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
-    IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+    uint src_shift = src >> pss->getHeapRegionShiftBy();
+    if (src_shift != heap_oop_shift_cache2[worker_id])
+    {
+      heap_oop_shift_cache2[worker_id] = src_shift;
+      uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8);
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
+      heap_type_is_young2[worker_id] = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+    }
 
-    if (!typeIsYoung)
+    if (!heap_type_is_young2[worker_id])
     {
       region_attr_ptr = regionAttrBiasedBase + (obj >> regionAttrShiftBy) * 2;
       aop_work_enqueue_card(region_attr_ptr, src, pss, worker_id);
