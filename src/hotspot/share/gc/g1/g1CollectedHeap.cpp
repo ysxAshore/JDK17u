@@ -5476,14 +5476,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       else
       {
         tty->print_cr("not in region");
-        Universe::heap()->fill_with_dummy_object((HeapWord *)obj_ptr, (HeapWord *)obj_ptr + size, true);
       }
       return forward_ptr;
     }
   }
 
-  void
-  do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
+  void do_oop_evac(uintptr_t src, G1ParScanThreadState *pss, uint worker_id)
   {
     uintptr_t obj;
     uintptr_t offset = *(uintptr_t *)src;
