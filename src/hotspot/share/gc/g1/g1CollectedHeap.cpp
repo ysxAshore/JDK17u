@@ -4034,6 +4034,9 @@ protected:
   uintptr_t *offset30_cache;
   uintptr_t *offset38_cache;
 
+  bool **plab_stats_valid;
+  uintptr_t **plab_stats_cache;
+
   bool *dest_attr_valid;
   uint *dest_attr_cache;
 
@@ -4134,6 +4137,9 @@ public:
     plab_end_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
     plab_top_end_valid = (bool **)calloc(_num_workers, sizeof(bool *));
 
+    plab_stats_valid = (bool **)calloc(_num_workers, sizeof(bool *));
+    plab_stats_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+
     for (uint i = 0; i < num_workers; ++i)
     {
       plab_buffer_valid[i] = (bool *)calloc(2, sizeof(bool));
@@ -4141,6 +4147,8 @@ public:
       plab_top_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
       plab_end_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
       plab_top_end_valid[i] = (bool *)calloc(2, sizeof(bool));
+      plab_stats_valid[i] = (bool *)calloc(2, sizeof(bool));
+      plab_stats_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
     }
 
     heap_oop_shift_cache = (uint *)calloc(_num_workers, 4);
@@ -4938,7 +4946,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
   uintptr_t allocate_direct_or_new_plab(u_int16_t dest_attr, size_t word_sz, bool *plab_refill_failed, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
   {
     int8_t dest_attr_type = (int8_t)(dest_attr >> 8);
-    G1HeapRegionAttr dest = G1HeapRegionAttr((G1HeapRegionAttr::region_type_t)dest_attr_type, (bool)(dest_attr & 0xff));
 
     uintptr_t plab_stats_ptr = 0;
     if (dest_attr_type == 0)
@@ -4946,14 +4953,20 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     else if (dest_attr_type == 1)
       plab_stats_ptr = (uintptr_t)_g1h + 0x2d0;
 
-    // @notice: single thread
     uint no_of_gc_workers = _num_workers;
 
     size_t gclab_word_size;
     size_t min_size = 0x102;
     size_t max_size = 0x40000;
     // ResizePLAB = 1
-    size_t temp = *(size_t *)(plab_stats_ptr + 0x30) / no_of_gc_workers;
+    if (!plab_stats_valid[worker_id][dest_attr_type])
+    {
+      plab_stats_valid[worker_id][dest_attr_type] = true;
+      plab_stats_cache[worker_id][dest_attr_type] = *(uintptr_t *)(plab_stats_ptr + 0x30);
+      IFDEF(TRACE, tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", plab_stats_ptr + 0x30, 8, plab_stats_cache[worker_id][dest_attr_type]));
+    }
+
+    size_t temp = plab_stats_cache[worker_id][dest_attr_type] / no_of_gc_workers;
     gclab_word_size = MIN2(MAX2(temp, min_size), max_size);
     size_t plab_word_size = MIN2(max_size, gclab_word_size);
     size_t required_in_plab = word_sz + 0x2;
@@ -4967,7 +4980,17 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t obj_ptr = par_allocate_during_gc(dest_attr_type, required_in_plab, plab_word_size, &actual_plab_size, allocator_ptr, pss, worker_id);
 
       uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
-      uintptr_t buffer = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+      int idx = dest_attr_type;
+      if (!plab_buffer_valid[worker_id][idx])
+      {
+        plab_buffer_valid[worker_id][idx] = true;
+
+        plab_buffer_ptr_cache[worker_id][idx] = *(uintptr_t *)(*(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8));
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", alloc_buffers_ptr + dest_attr_type * 8, 8, *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8)));
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", *(uintptr_t *)(alloc_buffers_ptr + dest_attr_type * 8), 8, plab_buffer_ptr_cache[worker_id][idx]));
+      }
+
+      uintptr_t buffer = plab_buffer_ptr_cache[worker_id][idx];
 
       size_t result = 0;
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
@@ -5003,18 +5026,14 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + 0x8, 8, klass_ptr));
           }
         }
-        size_t remaining = (hard_end_ptr - top_ptr) / 8;
-        *(uintptr_t *)(buffer + 0x50) += remaining;
       }
 
       if (obj_ptr != 0)
       {
-        *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * 8;
         *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * 8;
-        *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
         uintptr_t obj = obj_ptr;
         size_t delta = actual_plab_size - 2;
         if (delta >= word_sz)
