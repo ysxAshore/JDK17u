@@ -4034,6 +4034,12 @@ protected:
   uintptr_t *offset30_cache;
   uintptr_t *offset38_cache;
 
+  bool **region_ptr_valid;
+  uintptr_t **region_ptr_cache;
+
+  bool **alloc_region_valid;
+  uintptr_t **alloc_region_cache;
+
   bool **plab_stats_valid;
   uintptr_t **plab_stats_cache;
 
@@ -4140,6 +4146,11 @@ public:
     plab_stats_valid = (bool **)calloc(_num_workers, sizeof(bool *));
     plab_stats_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
 
+    region_ptr_valid = (bool **)calloc(_num_workers, sizeof(bool *));
+    region_ptr_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+    alloc_region_valid = (bool **)calloc(_num_workers, sizeof(bool *));
+    alloc_region_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
+
     for (uint i = 0; i < num_workers; ++i)
     {
       plab_buffer_valid[i] = (bool *)calloc(2, sizeof(bool));
@@ -4149,6 +4160,10 @@ public:
       plab_top_end_valid[i] = (bool *)calloc(2, sizeof(bool));
       plab_stats_valid[i] = (bool *)calloc(2, sizeof(bool));
       plab_stats_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+      region_ptr_valid[i] = (bool *)calloc(2, sizeof(bool));
+      region_ptr_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+      alloc_region_valid[i] = (bool *)calloc(2, sizeof(bool));
+      alloc_region_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
     }
 
     heap_oop_shift_cache = (uint *)calloc(_num_workers, 4);
@@ -4464,7 +4479,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         uintptr_t array = *(uintptr_t *)(bot_ptr + 0x10);
         IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr + 0x10, 8, array));
 
-        size_t offset = (threshold - blk_start) >> 3;
+        size_t offset = (threshold - blk_start) / 8;
         *(uint8_t *)(array + index) = offset;
         IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", array + index, 1, offset));
 
@@ -4488,29 +4503,28 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
             if (start_card <= end_card)
             {
-              size_t start_card_for_region = start_card;
-              u_char offset = 0xff; // const jubyte  max_jubyte  = (jubyte)-1;  // 0xFF       largest jubyte
-              // @notice: blockOffsetTable.hpp -> BOTConstants::N_powers = 14
-              for (uint i = 0; i < 14; i++)
+              size_t remaining = end_card - start_card + 1;
+              uintptr_t begin = array + start_card;
+
+              for (uint i = 0; i < 14 && remaining > 0; i++)
               {
-                // @notice: blockOffsetTable.hpp -> BOTConstants::LogBase = 4
-                size_t reach = start_card - 1 + ((1 << (4 * (i + 1))) - 1);
-                offset = 64 + i;
-                size_t num_cards = (reach >= end_card ? end_card : reach) - start_card_for_region + 1;
-                uintptr_t begin = array + start_card_for_region;
-                while (num_cards--)
-                {
-                  *(u_int8_t *)begin = offset;
-                  IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %x", begin, 1, offset));
-                  begin++;
-                }
-                start_card_for_region = reach + 1;
-                if (reach >= end_card)
-                  break;
+                size_t chunk = size_t(15) << (4 * i); // 15 * 16^i
+                size_t nbytes = (remaining < chunk) ? remaining : chunk;
+                u_char offset = u_char(64 + i);
+
+                memset((void *)begin, offset, nbytes);
+
+                IFDEF(TRACE, tty->print_cr(
+                                 "par_allocate: access %lx (%zx bytes) to write %x",
+                                 begin, nbytes, offset));
+
+                begin += nbytes;
+                remaining -= nbytes;
               }
             }
           }
         }
+
         index = end_index + 1;
         threshold = reserved_start + ((end_index << 6) + 64) * 8;
         *(uintptr_t *)(bot_part_ptr) = threshold;
@@ -4532,65 +4546,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x18, 4, active_node_ids));
 
     uintptr_t res = 0;
-    if (node_index != UINT_MAX - 1 && active_node_ids > 1)
-    {
-      uint region_size = *(uint *)(numa_ptr + 0x20);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x20, 4, region_size));
-
-      uint page_size = *(uint *)(numa_ptr + 0x28);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x28, 4, page_size));
-
-      uint max_search_depth = 3 * MAX2((uint)(page_size / region_size), 1u) * active_node_ids;
-
-      uintptr_t cur;
-      size_t cur_depth = 0;
-      if (from_head)
-        cur = *(uintptr_t *)(free_list_ptr + 0x28);
-      else
-        cur = *(uintptr_t *)(free_list_ptr + 0x30);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + (from_head ? 0x28 : 0x30), 8, cur));
-
-      while (cur != 0 && cur_depth < max_search_depth)
-      {
-        if (node_index == *(uint *)(cur + 0x120))
-          break;
-        ++cur_depth;
-        uintptr_t temp = cur;
-        if (from_head)
-          cur = *(uintptr_t *)(cur + 0xd0);
-        else
-          cur = *(uintptr_t *)(cur + 0xd8);
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", temp + (from_head ? 0xd0 : 0xd8), 8, cur));
-      }
-
-      if (cur == 0 || cur_depth >= max_search_depth)
-        res = 0;
-      else
-      {
-        res = cur;
-        uintptr_t prev = *(uintptr_t *)(res + 0xd8);
-        uintptr_t next = *(uintptr_t *)(res + 0xd0);
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + 0xd8, 8, prev));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + 0xd0, 8, next));
-
-        if (prev == 0)
-          *(uintptr_t *)(free_list_ptr + 0x28) = next;
-        else
-          *(uintptr_t *)(prev + 0xd0) = next;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", prev == 0 ? free_list_ptr + 0x28 : prev + 0xd0, 8, next));
-
-        if (next == 0)
-          *(uintptr_t *)(free_list_ptr + 0x30) = prev;
-        else
-          *(uintptr_t *)(next + 0xd8) = prev;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", next == 0 ? free_list_ptr + 0x30 : next + 0xd8, 8, prev));
-
-        *(uintptr_t *)(res + 0xd0) = 0;
-        *(uintptr_t *)(res + 0xd8) = 0;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + 0xd8, 8, 0));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + 0xd0, 8, 0));
-      }
-    }
 
     if (res == 0)
     {
@@ -4635,7 +4590,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
   uintptr_t new_region(uint heap_region_type, uint node_index, uint worker_id)
   {
-    uintptr_t hrm_ptr = (uintptr_t)_g1h + 0x130;
     uintptr_t res = allocate_free_region(heap_region_type, node_index, worker_id);
 
     bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
@@ -4661,13 +4615,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     uint node_index = *(uint *)(region_ptr + 0x30);
     IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", region_ptr + 0x30, 4, node_index));
 
-    uintptr_t survivor_ptr = (uintptr_t)_g1h + 0x3f8;
-    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + 0x8);
-    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + 0x8, 8, grow_array_ptr));
-
-    uintptr_t policy_ptr = *(uintptr_t *)((uintptr_t)_g1h + 0x430);
-    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x430, 8, policy_ptr));
-
     bool has_more_regions;
     uint heap_region_type;
     if (type == 1)
@@ -4676,6 +4623,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       heap_region_type = 0x3;
 
     uintptr_t new_alloc_region = new_region(heap_region_type, node_index, worker_id);
+
+    uintptr_t survivor_ptr = (uintptr_t)_g1h + 0x3f8;
+    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + 0x8, 8, grow_array_ptr));
 
     if (new_alloc_region != 0)
     {
@@ -4710,21 +4661,17 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t remset_ptr = *(uintptr_t *)(new_alloc_region + 0xb0);
       IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", new_alloc_region + 0xb0, 8, remset_ptr));
 
-      uint new_type = *(uint *)(new_alloc_region + 0xbc);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xbc, 4, new_type));
-
-      assert(new_type == heap_region_type, "error");
       uintptr_t state_ptr = remset_ptr + 0xf0;
-      if ((new_type & 0x2) != 0)
+      if ((heap_region_type & 0x2) != 0)
         *(uint *)state_ptr = 2;
-      else if ((new_type & 0x10) != 0)
+      else if ((heap_region_type & 0x10) != 0)
         *(uint *)state_ptr = 0;
       IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", state_ptr, 4, *(uint *)state_ptr));
 
       uint hrm_index = *(uint *)(new_alloc_region + 0xb8);
       IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %x", new_alloc_region + 0xb8, 4, hrm_index));
 
-      bool needs_remset_update = (new_type & 0x10) == 0;
+      bool needs_remset_update = (heap_region_type & 0x10) == 0;
       uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
       uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
       IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
@@ -4755,10 +4702,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
 
+      // @ deletable?
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
       *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
 
+      // @ deletable?
       if (type == 1)
       {
         uintptr_t old_set = (uintptr_t)_g1h + 0xa0;
@@ -4808,6 +4757,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
       *(uintptr_t *)(region_ptr + 0x18) = 0;
       *(uintptr_t *)(region_ptr + 0x8) = dummy_region;
+      for (uint i = 0; i < _num_workers; ++i)
+        for (int j = 0; j < 2; ++j)
+          if (region_ptr_valid[i][j] && region_ptr_cache[i][j] == region_ptr && alloc_region_valid[i][j])
+            alloc_region_cache[i][j] = dummy_region;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", region_ptr + 0x18, 8, 0));
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x8, 8, dummy_region));
     }
@@ -4834,6 +4787,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates, worker_id);
 
       *(uintptr_t *)(region_ptr + 0x8) = new_alloc_region;
+      for (uint i = 0; i < _num_workers; ++i)
+        for (int j = 0; j < 2; ++j)
+          if (region_ptr_valid[i][j] && region_ptr_cache[i][j] == region_ptr && alloc_region_valid[i][j])
+            alloc_region_cache[i][j] = new_alloc_region;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x8, 8, new_alloc_region));
 
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x10, 4, *(uint *)(region_ptr + 0x10)));
@@ -4850,19 +4807,27 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
   uintptr_t par_allocate_during_gc(int8_t dest_attr_type, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uintptr_t allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
   {
-    uintptr_t region_ptr = 0;
-    if (dest_attr_type == 0)
+    if (!region_ptr_valid[worker_id][dest_attr_type])
     {
-      uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
-      region_ptr = survivor_gc_alloc_ptr;
-    }
-    else if (dest_attr_type == 1)
-    {
-      uintptr_t old_gc_alloc_region_ptr = allocator_ptr + 0x30;
-      region_ptr = old_gc_alloc_region_ptr;
+      region_ptr_valid[worker_id][dest_attr_type] = true;
+      if (dest_attr_type == 0)
+      {
+        uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+        region_ptr_cache[worker_id][dest_attr_type] = survivor_gc_alloc_ptr;
+      }
+      else if (dest_attr_type == 1)
+        region_ptr_cache[worker_id][dest_attr_type] = allocator_ptr + 0x30;
     }
 
-    uintptr_t alloc_region = *(uintptr_t *)(region_ptr + 0x8);
+    uintptr_t region_ptr = region_ptr_cache[worker_id][dest_attr_type];
+
+    if (!alloc_region_valid[worker_id][dest_attr_type])
+    {
+      alloc_region_valid[worker_id][dest_attr_type] = true;
+      alloc_region_cache[worker_id][dest_attr_type] = *(uintptr_t *)(region_ptr + 0x8);
+    }
+
+    uintptr_t alloc_region = alloc_region_cache[worker_id][dest_attr_type];
 
     uintptr_t result = 0;
 
@@ -5026,14 +4991,21 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + 0x8, 8, klass_ptr));
           }
         }
+
+        // @ deletable?
+        size_t remaining = (hard_end_ptr - top_ptr) / 8;
+        *(uintptr_t *)(buffer + 0x50) += remaining;
       }
 
       if (obj_ptr != 0)
       {
+        // @ deletable?
+        *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
         *(uintptr_t *)(buffer + 0x40) = obj_ptr + actual_plab_size * 8;
         *(uintptr_t *)(buffer + 0x38) = obj_ptr + (actual_plab_size - 2) * 8;
+        *(uintptr_t *)(buffer + 0x48) += actual_plab_size;
         uintptr_t obj = obj_ptr;
         size_t delta = actual_plab_size - 2;
         if (delta >= word_sz)
@@ -5494,7 +5466,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       }
       else
       {
+        // @todo: deletable?
         tty->print_cr("not in region");
+        Universe::heap()->fill_with_dummy_object((HeapWord *)obj_ptr, (HeapWord *)obj_ptr + size, true);
       }
       return forward_ptr;
     }
