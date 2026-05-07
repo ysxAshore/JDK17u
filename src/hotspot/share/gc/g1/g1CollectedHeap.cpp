@@ -4034,6 +4034,12 @@ protected:
   uintptr_t *offset30_cache;
   uintptr_t *offset38_cache;
 
+  bool list_about_valid;
+  uint list_length;
+  uintptr_t list_head_ptr;
+  uintptr_t list_end_ptr;
+  uintptr_t list_last_ptr;
+
   bool **region_ptr_valid;
   uintptr_t **region_ptr_cache;
 
@@ -4176,7 +4182,14 @@ public:
     heap_type_is_young2 = (bool *)calloc(_num_workers, 1);
 
     localBot = (uint *)calloc(_num_workers, 4);
+
+    list_about_valid = false;
+    list_length = 0;
+    list_head_ptr = 0;
+    list_end_ptr = 0;
+    list_last_ptr = 0;
   }
+
 #define TRACE 0
 #define IFDEF(cond, stmt) \
   if (cond)               \
@@ -4549,26 +4562,33 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     if (res == 0)
     {
-      uint length = *(uint *)(free_list_ptr + 0x10);
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + 0x10, 4, length));
-      if (length == 0)
+      list_length = *(uint *)(free_list_ptr + 0x10);
+      list_head_ptr = *(uintptr_t *)(free_list_ptr + 0x28);
+      list_end_ptr = *(uintptr_t *)(free_list_ptr + 0x30);
+      list_last_ptr = *(uintptr_t *)(free_list_ptr + 0x38);
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + 0x10, 4, list_length));
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + 0x28, 8, list_head_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + 0x30, 8, list_end_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + 0x38, 8, list_last_ptr));
+      if (list_length == 0)
         res = 0;
       else
       {
-        res = *(uintptr_t *)(free_list_ptr + (from_head ? 0x28 : 0x30));
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", (free_list_ptr + (from_head ? 0x28 : 0x30)), 8, res));
+        res = from_head ? list_head_ptr : list_end_ptr;
 
         uintptr_t res_conf = *(uintptr_t *)(res + (from_head ? 0xd0 : 0xd8));
         IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", res + (from_head ? 0xd0 : 0xd8), 8, res_conf));
 
-        *(uintptr_t *)(free_list_ptr + (from_head ? 0x28 : 0x30)) = res_conf;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", free_list_ptr + (from_head ? 0x28 : 0x30), 8, res_conf));
+        uintptr_t addr = free_list_ptr + (from_head ? 0x28 : 0x30);
+        *(uintptr_t *)addr = res_conf;
 
         if (res_conf == 0)
-          *(uintptr_t *)(free_list_ptr + (from_head ? 0x30 : 0x28)) = 0;
+        {
+          uintptr_t addr = free_list_ptr + (from_head ? 0x30 : 0x28);
+          *(uintptr_t *)addr = 0;
+        }
         else
           *(uintptr_t *)(res_conf + (from_head ? 0xd8 : 0xd0)) = 0;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res_conf == 0 ? free_list_ptr + (from_head ? 0x30 : 0x28) : res_conf + (from_head ? 0xd8 : 0xd0), 8, 0));
 
         *(uintptr_t *)(res + (from_head ? 0xd0 : 0xd8)) = 0;
         IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? 0xd0 : 0xd8), 8, 0))
@@ -4577,12 +4597,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     if (res != 0)
     {
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %lx", free_list_ptr + 0x38, 8, *(uintptr_t *)(free_list_ptr + 0x38)))
-      if (*(uintptr_t *)(free_list_ptr + 0x38) == res)
+      if (list_last_ptr == res)
         *(uintptr_t *)(free_list_ptr + 0x38) = 0;
-
-      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", free_list_ptr + 0x10, 4, *(uint *)(free_list_ptr + 0x10)));
-      *(uint *)(free_list_ptr + 0x10) -= 1;
+      list_length -= 1;
+      *(uintptr_t *)(free_list_ptr + 0x10) = list_length;
     }
 
     return res;
