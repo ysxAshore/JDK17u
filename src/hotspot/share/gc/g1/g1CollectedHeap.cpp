@@ -4720,12 +4720,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       size_t allocated_bytes = top - bottom - *(uintptr_t *)(region_ptr + 0x18);
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", region_ptr + 0x18, 8, *(uintptr_t *)(region_ptr + 0x18)));
 
-      // @ deletable?
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
-      *(uintptr_t *)((uintptr_t)_g1h + 0x240) += allocated_bytes;
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", (uintptr_t)_g1h + 0x240, 8, *(uintptr_t *)((uintptr_t)_g1h + 0x240)));
-
-      // @ deletable?
       if (type == 1)
       {
         uintptr_t old_set = (uintptr_t)_g1h + 0xa0;
@@ -4864,7 +4858,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             tty->print_cr("wait par_allocate mutex");
           }
           result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-          tty->print_cr("before reset: par allocate lock %u", *(uint *)(lock_ptr + 8));
           if (*(uint *)(lock_ptr + 8) > 1)
             ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
           else
@@ -4887,7 +4880,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 tty->print_cr("wait par_allocate mutex");
               }
               result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-              tty->print_cr("before reset: par allocate lock %u", *(uint *)(lock_ptr + 8));
               if (*(uint *)(lock_ptr + 8) > 1)
                 ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
               else
@@ -4898,7 +4890,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             {
               uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
 
-              tty->print_cr("freelist lock %u", *(uint *)(freelist_lock_ptr + 8));
               while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
               {
               }
@@ -4912,7 +4903,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 else if (dest_attr_type == 1)
                   *(bool *)(allocator_ptr + 0x11) = true;
               }
-              tty->print_cr("before reset: freelist lock %u", *(uint *)(freelist_lock_ptr + 8));
               if (*(uint *)(freelist_lock_ptr + 8) > 1)
                 FreeList_lock->unlock();
               else
@@ -5009,10 +4999,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", start + 0x8, 8, klass_ptr));
           }
         }
-
-        // @ deletable?
-        size_t remaining = (hard_end_ptr - top_ptr) / 8;
-        *(uintptr_t *)(buffer + 0x50) += remaining;
       }
 
       if (obj_ptr != 0)
@@ -5616,7 +5602,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     uintptr_t low = to_obj + ArrayElementOff + start * OopSize;
     uintptr_t high = to_obj + ArrayElementOff + (start + chunk_size) * OopSize;
     uintptr_t p = to_obj + ArrayElementOff;
-    uintptr_t q = p + *(uint *)(to_obj + ArrayLenOff) * OopSize;
+    uintptr_t q = p + (start + chunk_size) * OopSize;
     if (p < low)
       p = low;
     if (q > high)
