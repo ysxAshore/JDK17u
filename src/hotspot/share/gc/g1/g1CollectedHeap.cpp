@@ -21,7 +21,8 @@
  * questions.
  *
  */
-
+#include <linux/ioctl.h>
+#include <sys/ioctl.h>
 #include "precompiled.hpp"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/metadataOnStackMark.hpp"
@@ -5642,6 +5643,222 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset();
       tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
       tty->print_cr("ref offset %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset());
+
+      // @notice: print task
+      // if (TRACE)
+      //{
+      //  uint localBot = *(uint *)(bottom_addr);
+      //  uint ageTop = *(uint *)(age_top_addr);
+      //  tty->print_cr("work: access %lx (%x bytes) to get %x", bottom_addr, 4, *(uint *)(bottom_addr));
+      //  tty->print_cr("work: access %lx (%x bytes) to get %x", age_top_addr, 4, *(uint *)(age_top_addr));
+      //  for (int i = localBot - 1; i >= 0; --i)
+      //    IFDEF(TRACE, tty->print_cr("work: access %lx (%x bytes) to get %lx", elems + i * 8, 8, *(uintptr_t *)(elems + i * 8)));
+      //}
+
+      // int fd = open("/dev/hwgc", O_RDWR);
+      // struct HWGCParameter
+      //{
+      //   uint32_t chunkSize;
+      //   uint32_t ageThreshold;
+      //   uint32_t heapRegionBias;
+      //   uint32_t regionAttrShiftBy;
+      //   uint32_t heapRegionShiftBy;
+      //   uint32_t logOfHRGrainBytes;
+      //   uint64_t stepperOffset;
+      //   uint64_t youngWordsBase;
+      //   uint64_t regionAttrBase;
+      //   uint64_t plabAllocatorPtr;
+      //   uint64_t regionAttrBiasedBase;
+      //   uint64_t heapRegionBiasedBase;
+      //   uint64_t parScanThreadStatePtr;
+      //   uint64_t taskQueueBottomAddr;
+      //   uint64_t taskQueueElemsBase;
+      //   uint64_t humogousReclaimCandidateBoolBase;
+      //   uint64_t cardTablePtr;
+      //   uint64_t g1h;
+      //   uint64_t intArrayKlass;
+      //   uint64_t objectKlass;
+      //   uint64_t lockPtr;
+      //   uint64_t thread;
+      //   uint64_t dummyRegion;
+      //   uint64_t numaPtr;
+      //   uint64_t compressedOopBase;
+      //   uint64_t compressedKlassPointerBase;
+      //   uint8_t compressedOopShift;
+      //   uint8_t compressedKlassPointerShift;
+      //   uint8_t useCompressedOops;
+      //   uint8_t useCompressedKlassPointers;
+      // };
+      // enum hwgc_state
+      //{
+      //   HWGC_IDLE,
+      //   HWGC_RUNNING,
+      //   HWGC_WAIT_MALLOC,
+      //   HWGC_WAIT_ENQUEUED,
+      //   HWGC_WAIT_PAGEFAULT,
+      //   HWGC_DEBUG,
+      //   HWGC_DONE
+      // };
+      // #define HWGC_IOC_MAGIC 'H'
+      // #define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct HWGCParameter)
+      // #define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
+      // #define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
+      // #define HWGC_IOC_DEBUG_WRITE _IOW(HWGC_IOC_MAGIC, 3, uint64_t)
+      //  struct HWGCParameter par = {0};
+      //  int state;
+      //  par.chunkSize = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
+      //  par.ageThreshold = *(uint *)((uintptr_t)pss + 0x17c);
+      //  par.heapRegionBias = pss->getHeapRegionBias();
+      //  par.regionAttrShiftBy = pss->getRegionAttrShiftBy();
+      //  par.heapRegionShiftBy = pss->getHeapRegionShiftBy();
+      //  par.logOfHRGrainBytes = HeapRegion::LogOfHRGrainBytes;
+      //  par.stepperOffset = *(uint64_t *)((uintptr_t)pss + PARTIAL_ARRAY_STEPPER_OFFSET);
+      //  par.youngWordsBase = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+      //  par.regionAttrBase = pss->getRegionAttrBase();
+      //  par.plabAllocatorPtr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+      //  par.regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
+      //  par.heapRegionBiasedBase = pss->getHeapRegionBiasedBase();
+      //  par.parScanThreadStatePtr = (uintptr_t)pss;
+      //  par.taskQueueBottomAddr = bottom_addr;
+      //  par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
+      //  par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
+      //  par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
+      //  par.g1h = (uintptr_t)_g1h;
+      //  par.intArrayKlass = (uintptr_t)Universe::intArrayKlassObj();
+      //  par.objectKlass = (uintptr_t)vmClasses::Object_klass();
+      //  par.lockPtr = (uintptr_t)FreeList_lock;
+      //  par.thread = (uintptr_t)Thread::current();
+      //  par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
+      //  par.numaPtr = (uintptr_t)G1NUMA::numa();
+      //  par.compressedOopBase = (uintptr_t)CompressedOops::base();
+      //  par.compressedKlassPointerBase = (uintptr_t)CompressedKlassPointers::base();
+      //  par.compressedOopShift = CompressedOops::shift();
+      //  par.compressedKlassPointerShift = CompressedKlassPointers::shift();
+      //  par.useCompressedOops = UseCompressedOops;
+      //  par.useCompressedKlassPointers = UseCompressedClassPointers;
+      //  Ticks start = Ticks::now();
+
+      // if (TRACE)
+      //{
+      //   tty->print_cr("=== Dumping 'par' struct ===");
+      //   tty->print_cr("par.chunkSize = %d", par.chunkSize);
+      //   tty->print_cr("par.ageThreshold = %u", par.ageThreshold);
+      //   tty->print_cr("par.heapRegionBias = %u", par.heapRegionBias);
+      //   tty->print_cr("par.regionAttrShiftBy = %u", par.regionAttrShiftBy);
+      //   tty->print_cr("par.heapRegionShiftBy = %u", par.heapRegionShiftBy);
+      //   tty->print_cr("par.logOfHRGrainBytes = %d", par.logOfHRGrainBytes);
+      //   tty->print_cr("par.stepperOffset = " UINT64_FORMAT, par.stepperOffset);
+      //   tty->print_cr("par.youngWordsBase = " PTR_FORMAT, par.youngWordsBase);
+      //   tty->print_cr("par.regionAttrBase = " PTR_FORMAT, par.regionAttrBase);
+      //   tty->print_cr("par.plabAllocatorPtr = " PTR_FORMAT, par.plabAllocatorPtr);
+      //   tty->print_cr("par.regionAttrBiasedBase = " PTR_FORMAT, par.regionAttrBiasedBase);
+      //   tty->print_cr("par.heapRegionBiasedBase = " PTR_FORMAT, par.heapRegionBiasedBase);
+      //   tty->print_cr("par.parScanThreadStatePtr = " PTR_FORMAT, par.parScanThreadStatePtr);
+      //   tty->print_cr("par.taskQueueBottomAddr = " PTR_FORMAT, par.taskQueueBottomAddr);
+      //   tty->print_cr("par.taskQueueElemsBase = " PTR_FORMAT, par.taskQueueElemsBase);
+      //   tty->print_cr("par.humogousReclaimCandidateBoolBase = " PTR_FORMAT, par.humogousReclaimCandidateBoolBase);
+      //   tty->print_cr("par.cardTablePtr = " PTR_FORMAT, par.cardTablePtr);
+      //   tty->print_cr("par.g1h = " PTR_FORMAT, par.g1h);
+      //   tty->print_cr("par.intArrayKlass = " PTR_FORMAT, par.intArrayKlass);
+      //   tty->print_cr("par.objectKlass = " PTR_FORMAT, par.objectKlass);
+      //   tty->print_cr("par.lockPtr = " PTR_FORMAT, par.lockPtr);
+      //   tty->print_cr("par.thread = " PTR_FORMAT, par.thread);
+      //   tty->print_cr("par.dummyRegion = " PTR_FORMAT, par.dummyRegion);
+      //   tty->print_cr("par.numaPtr = " PTR_FORMAT, par.numaPtr);
+      //   tty->print_cr("par.compressedOopBase = " PTR_FORMAT, par.compressedOopBase);
+      //   tty->print_cr("par.compressedKlassPointerBase = " PTR_FORMAT, par.compressedKlassPointerBase);
+      //   tty->print_cr("par.compressedOopShift = %d", par.compressedOopShift);
+      //   tty->print_cr("par.compressedKlassPointerShift = %d", par.compressedKlassPointerShift);
+      //   tty->print_cr("par.useCompressedOops = %d", par.useCompressedOops);
+      //   tty->print_cr("par.useCompressedKlassPointers = %d", par.useCompressedKlassPointers);
+      //   tty->print_cr("=== End of 'par' dump ===");
+      // }
+
+      // tty->print_cr("work start");
+      //  ioctl(fd, HWGC_IOC_START, &par);
+      //  while (1)
+      //{
+      //    ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+      //    if (state == HWGC_DONE)
+      //    {
+      //      Ticks end = Ticks::now();
+      //      jlong nanos = (end - start).nanoseconds();
+      //      tty->print_cr("work done, time is %ld ns", nanos);
+      //      break;
+      //    }
+      //    if (state == HWGC_WAIT_ENQUEUED)
+      //    {
+      //      lseek(fd, 0xe0, SEEK_SET);
+      //      uint64_t allocator_ptr, buffer = 0;
+      //      read(fd, &allocator_ptr, sizeof(allocator_ptr));
+      //      buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
+      //      ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
+      //    }
+      //    if (state == HWGC_WAIT_MALLOC)
+      //    {
+      //      lseek(fd, 0xe0, SEEK_SET);
+
+      //    uintptr_t grow_array_ptr, len;
+      //    read(fd, &grow_array_ptr, 8);
+      //    read(fd, &len, 4);
+      //    ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
+      //  }
+      //  if (state == HWGC_WAIT_PAGEFAULT)
+      //  {
+      //    lseek(fd, 0xe0, SEEK_SET);
+      //    uintptr_t vaddr, data, write, size;
+      //    read(fd, &vaddr, sizeof(vaddr));
+      //    read(fd, &data, sizeof(data));
+      //    read(fd, &write, sizeof(write));
+      //    read(fd, &size, sizeof(size));
+      //    if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+      //      tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+
+      //    uint64_t return_value = 0;
+      //    if (write)
+      //      memcpy((void *)vaddr, &data, size);
+      //    else
+      //      memcpy(&return_value, (void *)vaddr, size);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+      //  }
+      //  if (state == HWGC_DEBUG)
+      //  {
+      //    lseek(fd, 0xe0, SEEK_SET);
+
+      //    // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
+      //    // read(fd, &dest_attr_type, 8);
+      //    // read(fd, &min_word_size, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &allocator_ptr, 8);
+      //    // uintptr_t temp;
+      //    // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
+      //    // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
+      //    // uintptr_t region_ptr, desired_word_size;
+      //    // read(fd, &region_ptr, 8);
+      //    // read(fd, &desired_word_size, 8);
+      //    // uintptr_t temp;
+      //    //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
+      //    //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
+      //    // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+
+      //    // uintptr_t desired_word_size, heap_region_type, node_index;
+      //    // read(fd, &desired_word_size, 8);
+      //    // read(fd, &heap_region_type, 8);
+      //    // read(fd, &node_index, 8);
+      //    // size_t temp;
+      //    // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
+      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+
+      //    uintptr_t node_index;
+      //    read(fd, &node_index, 8);
+      //    uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
+      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
+      //  }
+      //}
+      // close(fd);
 
       bool tag = false; // 决定是否需要分发处理该task
       do

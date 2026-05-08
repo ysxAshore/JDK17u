@@ -38,43 +38,53 @@
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
 
-inline intptr_t* InstanceKlass::start_of_itable()   const { return (intptr_t*)start_of_vtable() + vtable_length(); }
-inline intptr_t* InstanceKlass::end_of_itable()     const { return start_of_itable() + itable_length(); }
+inline intptr_t *InstanceKlass::start_of_itable() const { return (intptr_t *)start_of_vtable() + vtable_length(); }
+inline intptr_t *InstanceKlass::end_of_itable() const { return start_of_itable() + itable_length(); }
 
-inline int InstanceKlass::itable_offset_in_words() const { return start_of_itable() - (intptr_t*)this; }
+inline int InstanceKlass::itable_offset_in_words() const { return start_of_itable() - (intptr_t *)this; }
 
 inline oop InstanceKlass::static_field_base_raw() { return java_mirror(); }
 
-inline OopMapBlock* InstanceKlass::start_of_nonstatic_oop_maps() const {
-  return (OopMapBlock*)(start_of_itable() + itable_length());
+inline OopMapBlock *InstanceKlass::start_of_nonstatic_oop_maps() const
+{
+  return (OopMapBlock *)(start_of_itable() + itable_length());
 }
 
-inline Klass** InstanceKlass::end_of_nonstatic_oop_maps() const {
-  return (Klass**)(start_of_nonstatic_oop_maps() +
-                   nonstatic_oop_map_count());
+inline Klass **InstanceKlass::end_of_nonstatic_oop_maps() const
+{
+  return (Klass **)(start_of_nonstatic_oop_maps() +
+                    nonstatic_oop_map_count());
 }
 
-inline InstanceKlass* volatile* InstanceKlass::adr_implementor() const {
-  if (is_interface()) {
-    return (InstanceKlass* volatile*)end_of_nonstatic_oop_maps();
-  } else {
+inline InstanceKlass *volatile *InstanceKlass::adr_implementor() const
+{
+  if (is_interface())
+  {
+    return (InstanceKlass *volatile *)end_of_nonstatic_oop_maps();
+  }
+  else
+  {
     return NULL;
   }
 }
 
-inline ObjArrayKlass* InstanceKlass::array_klasses_acquire() const {
+inline ObjArrayKlass *InstanceKlass::array_klasses_acquire() const
+{
   return Atomic::load_acquire(&_array_klasses);
 }
 
-inline void InstanceKlass::release_set_array_klasses(ObjArrayKlass* k) {
+inline void InstanceKlass::release_set_array_klasses(ObjArrayKlass *k)
+{
   Atomic::release_store(&_array_klasses, k);
 }
 
-inline jmethodID* InstanceKlass::methods_jmethod_ids_acquire() const {
+inline jmethodID *InstanceKlass::methods_jmethod_ids_acquire() const
+{
   return Atomic::load_acquire(&_methods_jmethod_ids);
 }
 
-inline void InstanceKlass::release_set_methods_jmethod_ids(jmethodID* jmeths) {
+inline void InstanceKlass::release_set_methods_jmethod_ids(jmethodID *jmeths)
+{
   Atomic::release_store(&_methods_jmethod_ids, jmeths);
 }
 
@@ -83,83 +93,98 @@ inline void InstanceKlass::release_set_methods_jmethod_ids(jmethodID* jmeths) {
 // as the previous macro based implementation.
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map(OopMapBlock* map, oop obj, OopClosureType* closure) {
-  T* p         = (T*)obj->obj_field_addr<T>(map->offset());
-  T* const end = p + map->count();
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map(OopMapBlock *map, oop obj, OopClosureType *closure)
+{
+  T *p = (T *)obj->obj_field_addr<T>(map->offset());
+  T *const end = p + map->count();
 
-  for (; p < end; ++p) {
+  for (; p < end; ++p)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map_reverse(OopMapBlock* map, oop obj, OopClosureType* closure) {
-  T* const start = (T*)obj->obj_field_addr<T>(map->offset());
-  T*       p     = start + map->count();
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map_reverse(OopMapBlock *map, oop obj, OopClosureType *closure)
+{
+  T *const start = (T *)obj->obj_field_addr<T>(map->offset());
+  T *p = start + map->count();
 
-  while (start < p) {
+  while (start < p)
+  {
     --p;
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map_bounded(OopMapBlock* map, oop obj, OopClosureType* closure, MemRegion mr) {
-  T* p   = (T*)obj->obj_field_addr<T>(map->offset());
-  T* end = p + map->count();
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_map_bounded(OopMapBlock *map, oop obj, OopClosureType *closure, MemRegion mr)
+{
+  T *p = (T *)obj->obj_field_addr<T>(map->offset());
+  T *end = p + map->count();
 
-  T* const l   = (T*)mr.start();
-  T* const h   = (T*)mr.end();
-  assert(mask_bits((intptr_t)l, sizeof(T)-1) == 0 &&
-         mask_bits((intptr_t)h, sizeof(T)-1) == 0,
+  T *const l = (T *)mr.start();
+  T *const h = (T *)mr.end();
+  assert(mask_bits((intptr_t)l, sizeof(T) - 1) == 0 &&
+             mask_bits((intptr_t)h, sizeof(T) - 1) == 0,
          "bounded region must be properly aligned");
 
-  if (p < l) {
+  if (p < l)
+  {
     p = l;
   }
-  if (end > h) {
+  if (end > h)
+  {
     end = h;
   }
 
-  for (;p < end; ++p) {
+  for (; p < end; ++p)
+  {
     Devirtualizer::do_oop(closure, p);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps(oop obj, OopClosureType* closure) {
-  OopMapBlock* map           = start_of_nonstatic_oop_maps();
-  OopMapBlock* const end_map = map + nonstatic_oop_map_count();
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps(oop obj, OopClosureType *closure)
+{
+  OopMapBlock *map = start_of_nonstatic_oop_maps();
+  OopMapBlock *const end_map = map + nonstatic_oop_map_count();
 
-  for (; map < end_map; ++map) {
+  for (; map < end_map; ++map)
+  {
     oop_oop_iterate_oop_map<T>(map, obj, closure);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps_reverse(oop obj, OopClosureType* closure) {
-  OopMapBlock* const start_map = start_of_nonstatic_oop_maps();
-  OopMapBlock* map             = start_map + nonstatic_oop_map_count();
-
-  while (start_map < map) {
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps_reverse(oop obj, OopClosureType *closure)
+{
+  OopMapBlock *const start_map = start_of_nonstatic_oop_maps();
+  OopMapBlock *map = start_map + nonstatic_oop_map_count();
+  while (start_map < map)
+  {
     --map;
     oop_oop_iterate_oop_map_reverse<T>(map, obj, closure);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps_bounded(oop obj, OopClosureType* closure, MemRegion mr) {
-  OopMapBlock* map           = start_of_nonstatic_oop_maps();
-  OopMapBlock* const end_map = map + nonstatic_oop_map_count();
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_oop_maps_bounded(oop obj, OopClosureType *closure, MemRegion mr)
+{
+  OopMapBlock *map = start_of_nonstatic_oop_maps();
+  OopMapBlock *const end_map = map + nonstatic_oop_map_count();
 
-  for (;map < end_map; ++map) {
+  for (; map < end_map; ++map)
+  {
     oop_oop_iterate_oop_map_bounded<T>(map, obj, closure, mr);
   }
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate(oop obj, OopClosureType* closure) {
-  if (Devirtualizer::do_metadata(closure)) {
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate(oop obj, OopClosureType *closure)
+{
+  if (Devirtualizer::do_metadata(closure))
+  {
     Devirtualizer::do_klass(closure, this);
   }
 
@@ -167,17 +192,21 @@ ALWAYSINLINE void InstanceKlass::oop_oop_iterate(oop obj, OopClosureType* closur
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_reverse(oop obj, OopClosureType* closure) {
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_reverse(oop obj, OopClosureType *closure)
+{
   assert(!Devirtualizer::do_metadata(closure),
-      "Code to handle metadata is not implemented");
+         "Code to handle metadata is not implemented");
 
   oop_oop_iterate_oop_maps_reverse<T>(obj, closure);
 }
 
 template <typename T, class OopClosureType>
-ALWAYSINLINE void InstanceKlass::oop_oop_iterate_bounded(oop obj, OopClosureType* closure, MemRegion mr) {
-  if (Devirtualizer::do_metadata(closure)) {
-    if (mr.contains(obj)) {
+ALWAYSINLINE void InstanceKlass::oop_oop_iterate_bounded(oop obj, OopClosureType *closure, MemRegion mr)
+{
+  if (Devirtualizer::do_metadata(closure))
+  {
+    if (mr.contains(obj))
+    {
       Devirtualizer::do_klass(closure, this);
     }
   }
@@ -185,13 +214,15 @@ ALWAYSINLINE void InstanceKlass::oop_oop_iterate_bounded(oop obj, OopClosureType
   oop_oop_iterate_oop_maps_bounded<T>(obj, closure, mr);
 }
 
-inline instanceOop InstanceKlass::allocate_instance(oop java_class, TRAPS) {
-  Klass* k = java_lang_Class::as_Klass(java_class);
-  if (k == NULL) {
+inline instanceOop InstanceKlass::allocate_instance(oop java_class, TRAPS)
+{
+  Klass *k = java_lang_Class::as_Klass(java_class);
+  if (k == NULL)
+  {
     ResourceMark rm(THREAD);
     THROW_(vmSymbols::java_lang_InstantiationException(), NULL);
   }
-  InstanceKlass* ik = cast(k);
+  InstanceKlass *ik = cast(k);
   ik->check_valid_for_instantiation(false, CHECK_NULL);
   ik->initialize(CHECK_NULL);
   return ik->allocate_instance(THREAD);

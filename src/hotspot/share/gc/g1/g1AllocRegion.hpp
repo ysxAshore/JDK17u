@@ -184,10 +184,6 @@ public:
                                                        size_t desired_word_size,
                                                        size_t *actual_word_size);
 
-  inline HeapWord *attempt_allocation_using_new_region_debug(size_t min_word_size,
-                                                             size_t desired_word_size,
-                                                             size_t *actual_word_size);
-
   // Should be called to allocate a new region even if the max of this
   // type of regions has been reached. Should only be called if other
   // allocation attempts have failed and we are not holding a valid
