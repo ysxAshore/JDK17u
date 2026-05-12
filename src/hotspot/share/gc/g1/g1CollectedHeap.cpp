@@ -4440,6 +4440,90 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     return old_value;
   }
   */
+    enum hwgc_state
+    {
+      HWGC_IDLE,
+      HWGC_RUNNING,
+      HWGC_WAIT_ATOMIC,
+      HWGC_WAIT_PAGEFAULT,
+      HWGC_DONE
+    };
+    struct PAR_ALLOCATE_PARS
+    {
+      uintptr_t alloc_region;
+      size_t min_word_size;
+      size_t desired_word_size;
+    };
+#define HWGC_IOC_MAGIC 'H'
+#define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct PAR_ALLOCATE_PARS)
+#define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
+#define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
+    hwgc_state state;
+    uintptr_t obj_ptr = 0;
+    int ret = 0;
+    struct PAR_ALLOCATE_PARS pars;
+
+    int fd = open("/dev/hwgc", O_RDWR);
+    if (fd < 0)
+    {
+      tty->print_cr("par_allocate_iml: failed to open /dev/hwgc");
+      goto soft_produce;
+    }
+    pars.alloc_region = alloc_region;
+    pars.min_word_size = min_word_size;
+    pars.desired_word_size = desired_word_size;
+
+    ret = ioctl(fd, HWGC_IOC_START, &pars);
+    if (ret < 0)
+    {
+      tty->print_cr("par_allocate_iml: failed to start HWGC");
+      goto soft_produce;
+    }
+    while (1)
+    {
+      ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+      if (state == HWGC_DONE)
+      {
+        lseek(fd, 0x50, SEEK_SET);
+        read(fd, &obj_ptr, sizeof(obj_ptr));
+        read(fd, actual_plab_size, sizeof(*actual_plab_size));
+        tty->print_cr("par_allocate_iml: allocation done %lx %lx", obj_ptr, *actual_plab_size);
+        break;
+      }
+      if (state == HWGC_WAIT_PAGEFAULT)
+      {
+        lseek(fd, 0x30, SEEK_SET);
+        uintptr_t vaddr, data, write, size;
+        read(fd, &vaddr, sizeof(vaddr));
+        read(fd, &data, sizeof(data));
+        read(fd, &write, sizeof(write));
+        read(fd, &size, sizeof(size));
+        if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+          tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+
+        uint64_t return_value = 0;
+        if (write)
+          memcpy((void *)vaddr, &data, size);
+        else
+          memcpy(&return_value, (void *)vaddr, size);
+        ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+      }
+      if (state == HWGC_WAIT_ATOMIC)
+      {
+        lseek(fd, 0x30, SEEK_SET);
+        uintptr_t vaddr, old_data, new_data;
+        read(fd, &vaddr, sizeof(vaddr));
+        read(fd, &old_data, sizeof(old_data));
+        read(fd, &new_data, sizeof(new_data));
+        uintptr_t res = Atomic::cmpxchg((uintptr_t *)vaddr, old_data, new_data);
+        tty->print_cr("par_allocate_iml: request atomic, %lx %lx %lx %lx", vaddr, old_data, new_data, res);
+        ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
+      }
+    }
+    close(fd);
+    return obj_ptr;
+
+  soft_produce:
     uintptr_t alloc_result;
     do
     {
