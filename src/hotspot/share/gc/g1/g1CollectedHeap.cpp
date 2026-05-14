@@ -4223,7 +4223,6 @@ public:
         new_top = *(uintptr_t *)(node + 0x8);
         IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to get %lx", node + 0x8, 8, new_top));
       }
-      //@notice: 这里的cmpxchg(&_top, result, new_top)一定会返回_top == result result 不变
       *(uintptr_t *)free_list_ptr = new_top;
       IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %lx", free_list_ptr, 8, new_top));
 
@@ -4440,90 +4439,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     return old_value;
   }
   */
-    enum hwgc_state
-    {
-      HWGC_IDLE,
-      HWGC_RUNNING,
-      HWGC_WAIT_ATOMIC,
-      HWGC_WAIT_PAGEFAULT,
-      HWGC_DONE
-    };
-    struct PAR_ALLOCATE_PARS
-    {
-      uintptr_t alloc_region;
-      size_t min_word_size;
-      size_t desired_word_size;
-    };
-#define HWGC_IOC_MAGIC 'H'
-#define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct PAR_ALLOCATE_PARS)
-#define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
-#define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
-    hwgc_state state;
-    uintptr_t obj_ptr = 0;
-    int ret = 0;
-    struct PAR_ALLOCATE_PARS pars;
-
-    int fd = open("/dev/hwgc", O_RDWR);
-    if (fd < 0)
-    {
-      tty->print_cr("par_allocate_iml: failed to open /dev/hwgc");
-      goto soft_produce;
-    }
-    pars.alloc_region = alloc_region;
-    pars.min_word_size = min_word_size;
-    pars.desired_word_size = desired_word_size;
-
-    ret = ioctl(fd, HWGC_IOC_START, &pars);
-    if (ret < 0)
-    {
-      tty->print_cr("par_allocate_iml: failed to start HWGC");
-      goto soft_produce;
-    }
-    while (1)
-    {
-      ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
-      if (state == HWGC_DONE)
-      {
-        lseek(fd, 0x50, SEEK_SET);
-        read(fd, &obj_ptr, sizeof(obj_ptr));
-        read(fd, actual_plab_size, sizeof(*actual_plab_size));
-        tty->print_cr("par_allocate_iml: allocation done %lx %lx", obj_ptr, *actual_plab_size);
-        break;
-      }
-      if (state == HWGC_WAIT_PAGEFAULT)
-      {
-        lseek(fd, 0x30, SEEK_SET);
-        uintptr_t vaddr, data, write, size;
-        read(fd, &vaddr, sizeof(vaddr));
-        read(fd, &data, sizeof(data));
-        read(fd, &write, sizeof(write));
-        read(fd, &size, sizeof(size));
-        if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
-          tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
-
-        uint64_t return_value = 0;
-        if (write)
-          memcpy((void *)vaddr, &data, size);
-        else
-          memcpy(&return_value, (void *)vaddr, size);
-        ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
-      }
-      if (state == HWGC_WAIT_ATOMIC)
-      {
-        lseek(fd, 0x30, SEEK_SET);
-        uintptr_t vaddr, old_data, new_data;
-        read(fd, &vaddr, sizeof(vaddr));
-        read(fd, &old_data, sizeof(old_data));
-        read(fd, &new_data, sizeof(new_data));
-        uintptr_t res = Atomic::cmpxchg((uintptr_t *)vaddr, old_data, new_data);
-        tty->print_cr("par_allocate_iml: request atomic, %lx %lx %lx %lx", vaddr, old_data, new_data, res);
-        ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
-      }
-    }
-    close(fd);
-    return obj_ptr;
-
-  soft_produce:
     uintptr_t alloc_result;
     do
     {
@@ -4632,6 +4547,84 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       }
     }
     return result;
+  }
+
+  void par_allocate_irq(uintptr_t alloc_region, uintptr_t result, size_t *actual_word_size, bool bot_updates)
+  {
+    if (result != 0 && bot_updates)
+    {
+      uintptr_t blk_start = result;
+      uintptr_t blk_end = result + (*actual_word_size * 8);
+      uintptr_t bot_part_ptr = alloc_region + 0x20;
+      uintptr_t next_offset_threshold = *(uintptr_t *)(bot_part_ptr);
+      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr, 8, next_offset_threshold));
+
+      if (blk_end > next_offset_threshold)
+      {
+        uintptr_t threshold = next_offset_threshold;
+        size_t index = *(uintptr_t *)(bot_part_ptr + 0x8);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x8, 8, index));
+
+        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x10, 8, bot_ptr));
+
+        uintptr_t array = *(uintptr_t *)(bot_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr + 0x10, 8, array));
+
+        size_t offset = (threshold - blk_start) / 8;
+        *(uint8_t *)(array + index) = offset;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", array + index, 1, offset));
+
+        uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr, 8, reserved_start));
+
+        // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
+        size_t end_index = (blk_end - 8 - reserved_start) >> 9;
+
+        if (index + 1 <= end_index)
+        {
+          // @notice: blockOffsetTable.hpp -> BOTConstants::LogN_words = 6
+          uintptr_t rem_st = reserved_start + ((index + 1) << 6) * 8;
+          // @notice: blockOffsetTable.hpp -> BOTConstants::N_words = 64
+          uintptr_t rem_end = reserved_start + ((end_index << 6) + 64) * 8;
+
+          if (rem_st < rem_end)
+          {
+            size_t start_card = (rem_st - reserved_start) >> 9;
+            size_t end_card = (rem_end - 8 - reserved_start) >> 9;
+
+            if (start_card <= end_card)
+            {
+              size_t remaining = end_card - start_card + 1;
+              uintptr_t begin = array + start_card;
+
+              for (uint i = 0; i < 14 && remaining > 0; i++)
+              {
+                size_t chunk = size_t(15) << (4 * i); // 15 * 16^i
+                size_t nbytes = (remaining < chunk) ? remaining : chunk;
+                u_char offset = u_char(64 + i);
+
+                memset((void *)begin, offset, nbytes);
+
+                IFDEF(TRACE, tty->print_cr(
+                                 "par_allocate: access %lx (%zx bytes) to write %x",
+                                 begin, nbytes, offset));
+
+                begin += nbytes;
+                remaining -= nbytes;
+              }
+            }
+          }
+        }
+
+        index = end_index + 1;
+        threshold = reserved_start + ((end_index << 6) + 64) * 8;
+        *(uintptr_t *)(bot_part_ptr) = threshold;
+        *(uintptr_t *)(bot_part_ptr + 0x8) = index;
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr, 8, threshold));
+        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr + 0x8, 8, index));
+      }
+    }
   }
 
   uintptr_t allocate_free_region(uint heap_region_type, uint node_index, uint worker_id)
@@ -4933,68 +4926,187 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t old = Atomic::cmpxchg(&par_allocate_owner, (uintptr_t)0, (uintptr_t)Thread::current());
       if (old == 0)
       {
-        if (dest_attr_type == 0)
-          result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-        else if (dest_attr_type == 1)
+        enum hwgc_state
         {
-          uintptr_t lock_ptr = ((HeapRegion *)alloc_region)->get_lock_ptr();
-          while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
-          {
-            tty->print_cr("wait par_allocate mutex");
-          }
-          result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-          if (*(uint *)(lock_ptr + 8) > 1)
-            ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
-          else
-            *(uint *)(lock_ptr + 8) = 0;
-        }
-
-        if (result == 0)
+          HWGC_IDLE,
+          HWGC_RUNNING,
+          HWGC_WAIT_ALLOCATE,
+          HWGC_WAIT_ATTEMPT,
+          HWGC_WAIT_LOCK_WAKE,
+          HWGC_WAIT_PAGEFAULT,
+          HWGC_WAIT_ATOMIC,
+          HWGC_DONE
+        };
+        struct PAR_ALLOCATE_PARS
         {
-          uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
-          bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
-          if (!is_full)
+          uint8_t dest_attr_type;
+          uint64_t allocator_ptr;
+          uint64_t alloc_region;
+          uint64_t min_word_size;
+          uint64_t desired_word_size;
+          uint64_t freelist_lock_ptr;
+          uint64_t thread;
+        };
+#define HWGC_IOC_MAGIC 'H'
+#define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct PAR_ALLOCATE_PARS)
+#define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
+#define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
+        hwgc_state state;
+        int ret = 0;
+        struct PAR_ALLOCATE_PARS pars;
+
+        int fd = open("/dev/hwgc", O_RDWR);
+        pars.dest_attr_type = dest_attr_type;
+        pars.allocator_ptr = allocator_ptr;
+        pars.alloc_region = alloc_region;
+        pars.min_word_size = min_word_size;
+        pars.desired_word_size = desired_word_size;
+        pars.freelist_lock_ptr = (uintptr_t)FreeList_lock;
+        pars.thread = (uintptr_t)Thread::current();
+
+        ret = ioctl(fd, HWGC_IOC_START, &pars);
+
+        while (1)
+        {
+          ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
+          if (state == HWGC_DONE)
           {
-            if (dest_attr_type == 0)
-              result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-            else if (dest_attr_type == 1)
+            lseek(fd, 0x70, SEEK_SET);
+            read(fd, &result, sizeof(result));
+            read(fd, actual_word_size, sizeof(*actual_word_size));
+            break;
+          }
+          if (state == HWGC_WAIT_PAGEFAULT)
+          {
+            lseek(fd, 0x50, SEEK_SET);
+            uintptr_t vaddr, data, write, size;
+            read(fd, &vaddr, sizeof(vaddr));
+            read(fd, &data, sizeof(data));
+            read(fd, &write, sizeof(write));
+            read(fd, &size, sizeof(size));
+            if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
+              tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+
+            uint64_t return_value = 0;
+            if (write)
+              memcpy((void *)vaddr, &data, size);
+            else
+              memcpy(&return_value, (void *)vaddr, size);
+            ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
+          }
+          if (state == HWGC_WAIT_ALLOCATE)
+          {
+            lseek(fd, 0x50, SEEK_SET);
+            uintptr_t result, word_size;
+            read(fd, &result, sizeof(result));
+            read(fd, &word_size, sizeof(word_size));
+            par_allocate_irq(alloc_region, result, &word_size, true);
+            ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &result);
+          }
+          if (state == HWGC_WAIT_ATTEMPT)
+          {
+            result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+            struct temp_struct
             {
-              uintptr_t lock_ptr = ((HeapRegion *)alloc_region)->get_lock_ptr();
-              while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
-              {
-                tty->print_cr("wait par_allocate mutex");
-              }
-              result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-              if (*(uint *)(lock_ptr + 8) > 1)
-                ((Mutex *)(((HeapRegion *)alloc_region)->get_lock_ptr()))->unlock();
-              else
-                *(uint *)(lock_ptr + 8) = 0;
+              uintptr_t result;
+              uintptr_t word_size;
+            };
+            struct temp_struct temp;
+            temp.result = result;
+            temp.word_size = *actual_word_size;
+            ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &temp);
+          }
+          if (state == HWGC_WAIT_LOCK_WAKE)
+          {
+            lseek(fd, 0x50, SEEK_SET);
+            uintptr_t lock_ptr;
+            read(fd, &lock_ptr, sizeof(lock_ptr));
+            ((Mutex *)(lock_ptr))->unlock();
+            ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &lock_ptr);
+          }
+          if (state == HWGC_WAIT_ATOMIC)
+          {
+            lseek(fd, 0x50, SEEK_SET);
+            uintptr_t vaddr, old_data, new_data, size;
+            read(fd, &vaddr, sizeof(vaddr));
+            read(fd, &old_data, sizeof(old_data));
+            read(fd, &new_data, sizeof(new_data));
+            read(fd, &size, sizeof(size));
+            if (size == 8)
+            {
+              uintptr_t res = Atomic::cmpxchg((uintptr_t *)vaddr, old_data, new_data);
+              ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
             }
-
-            if (result == 0)
+            else
             {
-              uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
-
-              while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
-              {
-              }
-              *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
-
-              result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-              if (result == 0)
-              {
-                if (dest_attr_type == 0)
-                  *(bool *)(allocator_ptr + 0x10) = true;
-                else if (dest_attr_type == 1)
-                  *(bool *)(allocator_ptr + 0x11) = true;
-              }
-              if (*(uint *)(freelist_lock_ptr + 8) > 1)
-                FreeList_lock->unlock();
-              else
-                *(uint *)(freelist_lock_ptr + 8) = 0;
+              uint res = Atomic::cmpxchg((uint *)vaddr, (uint)old_data, (uint)new_data);
+              ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &res);
             }
           }
         }
+        close(fd);
+
+        // if (dest_attr_type == 0)
+        //   result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+        // else if (dest_attr_type == 1)
+        //{
+        //   uintptr_t lock_ptr = alloc_region + 0x40;
+        //   while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
+        //   {
+        //     tty->print_cr("wait par_allocate mutex");
+        //   }
+        //   result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+        //   if (*(uint *)(lock_ptr + 8) > 1)
+        //     ((Mutex *)(lock_ptr))->unlock();
+        //   else
+        //     *(uint *)(lock_ptr + 8) = 0;
+        // }
+
+        // if (result == 0)
+        //{
+        //   uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+        //   bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+        //   if (!is_full)
+        //   {
+        //     if (dest_attr_type == 0)
+        //       result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+        //     else if (dest_attr_type == 1)
+        //     {
+        //       uintptr_t lock_ptr = alloc_region + 0x40;
+        //       while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
+        //       {
+        //         tty->print_cr("wait par_allocate mutex");
+        //       }
+        //       result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+        //       if (*(uint *)(lock_ptr + 8) > 1)
+        //         ((Mutex *)(lock_ptr))->unlock();
+        //       else
+        //         *(uint *)(lock_ptr + 8) = 0;
+        //     }
+
+        //    if (result == 0)
+        //    {
+        //      uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
+        //      while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
+        //      {
+        //      }
+        //      *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
+
+        //      result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+        //      if (result == 0)
+        //      {
+        //        if (dest_attr_type == 0)
+        //          *(bool *)(allocator_ptr + 0x10) = true;
+        //        else if (dest_attr_type == 1)
+        //          *(bool *)(allocator_ptr + 0x11) = true;
+        //      }
+        //      if (*(uint *)(freelist_lock_ptr + 8) > 1)
+        //        FreeList_lock->unlock();
+        //      else
+        //        *(uint *)(freelist_lock_ptr + 8) = 0;
+        //    }
+        //  }
+        //}
         *(uintptr_t *)(&par_allocate_owner) = (uintptr_t)0;
         return result;
       }
@@ -5372,9 +5484,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
     uintptr_t forward_ptr = 0;
-    uintptr_t old_mark = Atomic::cmpxchg((uintptr_t *)old, m_value, m);
+    uintptr_t old_mark = *(uintptr_t *)old;
     if (old_mark == m_value)
+    {
       forward_ptr = 0;
+      *(uintptr_t *)old = m;
+    }
     else
       forward_ptr = old_mark & ~0x3;
 
