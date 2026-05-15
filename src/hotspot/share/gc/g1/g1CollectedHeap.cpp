@@ -4955,7 +4955,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         int ret = 0;
         struct PAR_ALLOCATE_PARS pars;
 
-        int fd = open("/dev/hwgc", O_RDWR);
+        int fd = open("/dev/hwgc0", O_RDWR);
         pars.dest_attr_type = dest_attr_type;
         pars.allocator_ptr = allocator_ptr;
         pars.alloc_region = alloc_region;
