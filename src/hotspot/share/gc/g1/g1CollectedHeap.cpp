@@ -4228,8 +4228,8 @@ public:
 
       if (node != 0)
       {
-        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %x", node + 0x8, 8, 0));
         *(uintptr_t *)(node + 0x8) = 0;
+        IFDEF(TRACE, tty->print_cr("buffer_node_allocate: access %lx (%d bytes) to write %x", node + 0x8, 8, 0));
       }
     }
     if (node == 0)
@@ -4249,6 +4249,7 @@ public:
       return;
 
     uintptr_t ct_ptr = *(uintptr_t *)((uintptr_t)pss + 0x60);
+    IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x60, 8, ct_ptr));
 
     if (!byte_about_valid[worker_id])
     {
@@ -4299,8 +4300,12 @@ public:
         if (buffer_cache[worker_id] != 0)
         {
           node = buffer_cache[worker_id] - 0x10;
+
           *(uintptr_t *)node = 0;
           *(uintptr_t *)(node + 0x8) = offset30_cache[worker_id];
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %x", node, 8, 0));
+          IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", node + 0x8, 8, offset30_cache[worker_id]));
+
           offset30_cache[worker_id] = node;
           if (offset38_cache[worker_id] == 0)
             offset38_cache[worker_id] = node;
@@ -4311,6 +4316,7 @@ public:
 
       int idx = index_cache[worker_id] / 8 - 1;
       *(size_t *)(buffer_cache[worker_id] + idx * 8) = res;
+      IFDEF(TRACE, tty->print_cr("aop: access %lx (%d bytes) to write %lx", buffer_cache[worker_id] + idx * 8, 8, res));
       index_cache[worker_id] = idx * 8;
       last_index_cache[worker_id] = card_index;
     }
@@ -4349,6 +4355,7 @@ public:
     {
       uintptr_t elems = pss->getTaskQueueElemsBase();
       *(uintptr_t *)(elems + localBot[worker_id] * 8) = UseCompressedOops ? dest + 0x1 : dest;
+      IFDEF(TRACE, tty->print_cr("do_oop_work: access %lx (%x bytes) to write %lx", elems + localBot[worker_id] * 8, 8, UseCompressedOops ? dest + 0x1 : dest));
       localBot[worker_id] = localBot[worker_id] + 1;
     }
     else if (((dest ^ obj) >> HeapRegion::LogOfHRGrainBytes) != 0)
@@ -4453,12 +4460,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       if (want_to_allocate >= min_word_size)
       {
         uintptr_t new_top = top + want_to_allocate * 8;
-        // uintptr_t result = *(uintptr_t *)(alloc_region + 0x10);
         uintptr_t result = Atomic::cmpxchg((uintptr_t *)(alloc_region + 0x10), top, new_top);
         if (result == top)
         {
-          //*(uintptr_t *)(alloc_region + 0x10) = new_top;
-          IFDEF(TRACE, tty->print_cr("par_allocate_iml: access %lx (%x bytes) to write %lx", alloc_region + 0x10, 8, new_top));
           *actual_plab_size = want_to_allocate;
           return top;
         }
@@ -4499,14 +4503,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
         IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr, 8, reserved_start));
 
-        // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
         size_t end_index = (blk_end - 8 - reserved_start) >> 9;
 
         if (index + 1 <= end_index)
         {
-          // @notice: blockOffsetTable.hpp -> BOTConstants::LogN_words = 6
           uintptr_t rem_st = reserved_start + ((index + 1) << 6) * 8;
-          // @notice: blockOffsetTable.hpp -> BOTConstants::N_words = 64
           uintptr_t rem_end = reserved_start + ((end_index << 6) + 64) * 8;
 
           if (rem_st < rem_end)
@@ -4527,9 +4528,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
                 memset((void *)begin, offset, nbytes);
 
-                IFDEF(TRACE, tty->print_cr(
-                                 "par_allocate: access %lx (%zx bytes) to write %x",
-                                 begin, nbytes, offset));
+                IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%zx bytes) to write %x", begin, nbytes, offset));
 
                 begin += nbytes;
                 remaining -= nbytes;
@@ -4549,92 +4548,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     return result;
   }
 
-  void par_allocate_irq(uintptr_t alloc_region, uintptr_t result, size_t *actual_word_size, bool bot_updates)
-  {
-    if (result != 0 && bot_updates)
-    {
-      uintptr_t blk_start = result;
-      uintptr_t blk_end = result + (*actual_word_size * 8);
-      uintptr_t bot_part_ptr = alloc_region + 0x20;
-      uintptr_t next_offset_threshold = *(uintptr_t *)(bot_part_ptr);
-      IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr, 8, next_offset_threshold));
-
-      if (blk_end > next_offset_threshold)
-      {
-        uintptr_t threshold = next_offset_threshold;
-        size_t index = *(uintptr_t *)(bot_part_ptr + 0x8);
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x8, 8, index));
-
-        uintptr_t bot_ptr = *(uintptr_t *)(bot_part_ptr + 0x10);
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_part_ptr + 0x10, 8, bot_ptr));
-
-        uintptr_t array = *(uintptr_t *)(bot_ptr + 0x10);
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr + 0x10, 8, array));
-
-        size_t offset = (threshold - blk_start) / 8;
-        *(uint8_t *)(array + index) = offset;
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", array + index, 1, offset));
-
-        uintptr_t reserved_start = *(uintptr_t *)(bot_ptr);
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to get %lx", bot_ptr, 8, reserved_start));
-
-        // @notice: blockOffsetTable.hpp -> BOTConstants::LogN = 9
-        size_t end_index = (blk_end - 8 - reserved_start) >> 9;
-
-        if (index + 1 <= end_index)
-        {
-          // @notice: blockOffsetTable.hpp -> BOTConstants::LogN_words = 6
-          uintptr_t rem_st = reserved_start + ((index + 1) << 6) * 8;
-          // @notice: blockOffsetTable.hpp -> BOTConstants::N_words = 64
-          uintptr_t rem_end = reserved_start + ((end_index << 6) + 64) * 8;
-
-          if (rem_st < rem_end)
-          {
-            size_t start_card = (rem_st - reserved_start) >> 9;
-            size_t end_card = (rem_end - 8 - reserved_start) >> 9;
-
-            if (start_card <= end_card)
-            {
-              size_t remaining = end_card - start_card + 1;
-              uintptr_t begin = array + start_card;
-
-              for (uint i = 0; i < 14 && remaining > 0; i++)
-              {
-                size_t chunk = size_t(15) << (4 * i); // 15 * 16^i
-                size_t nbytes = (remaining < chunk) ? remaining : chunk;
-                u_char offset = u_char(64 + i);
-
-                memset((void *)begin, offset, nbytes);
-
-                IFDEF(TRACE, tty->print_cr(
-                                 "par_allocate: access %lx (%zx bytes) to write %x",
-                                 begin, nbytes, offset));
-
-                begin += nbytes;
-                remaining -= nbytes;
-              }
-            }
-          }
-        }
-
-        index = end_index + 1;
-        threshold = reserved_start + ((end_index << 6) + 64) * 8;
-        *(uintptr_t *)(bot_part_ptr) = threshold;
-        *(uintptr_t *)(bot_part_ptr + 0x8) = index;
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr, 8, threshold));
-        IFDEF(TRACE, tty->print_cr("par_allocate: access %lx (%x bytes) to write %lx", bot_part_ptr + 0x8, 8, index));
-      }
-    }
-  }
-
   uintptr_t allocate_free_region(uint heap_region_type, uint node_index, uint worker_id)
   {
     uintptr_t hrm_ptr = (uintptr_t)_g1h + 0x130;
     uintptr_t free_list_ptr = hrm_ptr + 0xb0;
     bool from_head = (heap_region_type & 0x2) == 0;
-    uintptr_t numa_ptr = (uintptr_t)G1NUMA::numa();
-    uint active_node_ids = *(uint *)(numa_ptr + 0x18);
-    IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to get %x", numa_ptr + 0x18, 4, active_node_ids));
 
     uintptr_t res = 0;
 
@@ -4659,26 +4577,35 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
         uintptr_t addr = free_list_ptr + (from_head ? 0x28 : 0x30);
         *(uintptr_t *)addr = res_conf;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %lx", addr, 8, res_conf));
 
         if (res_conf == 0)
         {
           uintptr_t addr = free_list_ptr + (from_head ? 0x30 : 0x28);
           *(uintptr_t *)addr = 0;
+          IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", addr, 8, 0));
         }
         else
+        {
           *(uintptr_t *)(res_conf + (from_head ? 0xd8 : 0xd0)) = 0;
+          IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res_conf + (from_head ? 0xd8 : 0xd0), 8, 0));
+        }
 
         *(uintptr_t *)(res + (from_head ? 0xd0 : 0xd8)) = 0;
-        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? 0xd0 : 0xd8), 8, 0))
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", res + (from_head ? 0xd0 : 0xd8), 8, 0));
       }
     }
 
     if (res != 0)
     {
       if (list_last_ptr == res)
+      {
         *(uintptr_t *)(free_list_ptr + 0x38) = 0;
+        IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", free_list_ptr + 0x38, 8, 0));
+      }
       list_length -= 1;
       *(uintptr_t *)(free_list_ptr + 0x10) = list_length;
+      IFDEF(TRACE, tty->print_cr("allocate_free: access %lx (%x bytes) to write %x", free_list_ptr + 0x10, 4, list_length));
     }
 
     return res;
@@ -4903,6 +4830,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       if (dest_attr_type == 0)
       {
         uintptr_t survivor_gc_alloc_ptr = *(uintptr_t *)(allocator_ptr + 0x28);
+        IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %lx", allocator_ptr + 0x28, 8, survivor_gc_alloc_ptr));
         region_ptr_cache[worker_id][dest_attr_type] = survivor_gc_alloc_ptr;
       }
       else if (dest_attr_type == 1)
@@ -4915,6 +4843,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     {
       alloc_region_valid[worker_id][dest_attr_type] = true;
       alloc_region_cache[worker_id][dest_attr_type] = *(uintptr_t *)(region_ptr + 0x8);
+      IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %lx", region_ptr + 0x8, 8, alloc_region_cache[worker_id][dest_attr_type]));
     }
 
     uintptr_t alloc_region = alloc_region_cache[worker_id][dest_attr_type];
@@ -4931,20 +4860,28 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         else if (dest_attr_type == 1)
         {
           uintptr_t lock_ptr = alloc_region + 0x40;
+          IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", lock_ptr + 8, 4, *(uint *)(lock_ptr + 8)));
           while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
           {
-            tty->print_cr("wait par_allocate mutex");
+            IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
           }
           result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
           if (*(uint *)(lock_ptr + 8) > 1)
+          {
+            tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
             ((Mutex *)(lock_ptr))->unlock();
+          }
           else
+          {
             *(uint *)(lock_ptr + 8) = 0;
+            IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", lock_ptr + 8, 4, 0));
+          }
         }
 
         if (result == 0)
         {
           uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+          IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 1, is_full_value));
           bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
           if (!is_full)
           {
@@ -4953,15 +4890,22 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             else if (dest_attr_type == 1)
             {
               uintptr_t lock_ptr = alloc_region + 0x40;
+              IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", lock_ptr + 8, 4, *(uint *)(lock_ptr + 8)));
               while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
               {
-                tty->print_cr("wait par_allocate mutex");
+                IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
               }
               result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
               if (*(uint *)(lock_ptr + 8) > 1)
+              {
                 ((Mutex *)(lock_ptr))->unlock();
+                tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
+              }
               else
+              {
                 *(uint *)(lock_ptr + 8) = 0;
+                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", lock_ptr + 8, 4, 0));
+              }
             }
 
             if (result == 0)
@@ -4969,8 +4913,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
               uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
               while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
               {
+                IFDEF(TRACE, tty->print_cr("wait par_allocate freelist lock"));
               }
               *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
+              IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %lx", freelist_lock_ptr, 8, (uintptr_t)Thread::current()));
 
               result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
               if (result == 0)
@@ -4979,11 +4925,19 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                   *(bool *)(allocator_ptr + 0x10) = true;
                 else if (dest_attr_type == 1)
                   *(bool *)(allocator_ptr + 0x11) = true;
+                uintptr_t addr = allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11);
+                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", addr, 1, true));
               }
               if (*(uint *)(freelist_lock_ptr + 8) > 1)
+              {
                 FreeList_lock->unlock();
+                tty->print_cr("par_allocate freelist lock unlock");
+              }
               else
+              {
                 *(uint *)(freelist_lock_ptr + 8) = 0;
+                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", freelist_lock_ptr + 8, 4, 0));
+              }
             }
           }
         }
@@ -5022,6 +4976,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     size_t required_in_plab = word_sz + 0x2;
 
     uintptr_t allocator_ptr = *(uintptr_t *)(plab_allocator_ptr + 0x8);
+    IFDEF(TRACE, tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", plab_allocator_ptr + 0x8, 8, allocator_ptr));
     bool may_throw_away_buffer = required_in_plab * 100 < plab_word_size * 0xa;
     if ((required_in_plab <= plab_word_size) && may_throw_away_buffer)
     {
@@ -5045,6 +5000,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       size_t result = 0;
       uintptr_t top_ptr = *(uintptr_t *)(buffer + 0x30);
       uintptr_t hard_end_ptr = *(uintptr_t *)(buffer + 0x40);
+      IFDEF(TRACE, tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, top_ptr));
+      IFDEF(TRACE, tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", buffer + 0x40, 8, hard_end_ptr));
+
       if (top_ptr < hard_end_ptr)
       {
         {
@@ -5081,6 +5039,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       if (obj_ptr != 0)
       {
         // @ deletable?
+        IFDEF(TRACE, tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", buffer + 0x48, 8, *(uintptr_t *)(buffer + 0x48)));
         *(uintptr_t *)(buffer + 0x20) = actual_plab_size;
         *(uintptr_t *)(buffer + 0x28) = obj_ptr;
         *(uintptr_t *)(buffer + 0x30) = obj_ptr;
@@ -5093,6 +5052,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           *(uintptr_t *)(buffer + 0x30) = obj + word_sz * 8;
         else
           obj = 0;
+        if (TRACE)
+        {
+          for (int i = 0x20; i <= 0x48; i += 0x8)
+            tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", buffer + i, 8, *(uintptr_t *)(buffer + i));
+        }
+
         return obj;
       }
       else if (top_ptr < hard_end_ptr)
@@ -5100,6 +5065,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         *(uintptr_t *)(buffer + 0x38) = hard_end_ptr;
         *(uintptr_t *)(buffer + 0x30) = hard_end_ptr;
         *(uintptr_t *)(buffer + 0x28) = hard_end_ptr;
+        if (TRACE)
+        {
+          for (int i = 0x28; i <= 0x38; i += 0x8)
+            tty->print_cr("allocate_direct_or_new_plab: access %lx (%d bytes) to get %lx", buffer + i, 8, *(uintptr_t *)(buffer + i));
+        }
       }
 
       *plab_refill_failed = true;
@@ -5147,7 +5117,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     {
       // size = ((oop)old)->size_given_klass((Klass *)klass_ptr);
       if (kid == InstanceMirrorKlassID)
+      {
         size = *(uint *)(old + java_lang_Class::get_oop_size_offset());
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old + java_lang_Class::get_oop_size_offset(), 4, size));
+      }
       else
         size = lh >> 3;
     }
@@ -5187,6 +5160,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     int8_t dest_attr_type = (int8_t)(dest_attr >> 8);
     int idx = dest_attr_type;
     uintptr_t plab_allocator_ptr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", (uintptr_t)pss + 0x70, 8, plab_allocator_ptr));
     uintptr_t alloc_buffers_ptr = plab_allocator_ptr + 0x10;
     if (!plab_buffer_valid[worker_id][idx])
     {
@@ -5206,13 +5180,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
       uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
 
-      IFDEF(TRACE, tty->print_cr(
-                       "do_copy2survivor: access %lx (%d bytes) to get %lx",
-                       buffer + 0x30, 8, new_top));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, new_top));
 
-      IFDEF(TRACE, tty->print_cr(
-                       "do_copy2survivor: access %lx (%d bytes) to get %lx",
-                       buffer + 0x38, 8, new_end));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, new_end));
 
       // cache 原本为 0，认为是首次初始化，不退出
       bool cache_was_zero = old_top == 0 && old_end == 0;
@@ -5225,10 +5195,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
             __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
 
-        // 根据你所在函数的返回类型选择一种：
-        // return NULL;
-        // return false;
-        // fatal("PLAB cache inconsistent");
         assert(true, "PLAB cache inconsistent");
       }
 
@@ -5244,6 +5210,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       obj_ptr = plab_top_cache[worker_id][idx];
       plab_top_cache[worker_id][idx] = obj_ptr + size * 8;
       *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = plab_top_cache[worker_id][idx];
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", plab_buffer_ptr_cache[worker_id][idx] + 0x30, 8, plab_top_cache[worker_id][idx]));
       int other = idx == 0 ? 1 : 0;
       if (plab_top_end_valid[worker_id][other] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
         plab_top_cache[worker_id][other] = plab_top_cache[worker_id][idx];
@@ -5262,6 +5229,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       // obj_ptr = (uintptr_t)pss->allocate_copy_slow(&dest, (oop)old, size, age, 0);
       bool is_old = dest_attr_type == 1;
       bool old_gen_is_full = *(bool *)((uintptr_t)pss + 0x1e8);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1e8, 1, old_gen_is_full));
       if (!(is_old && old_gen_is_full))
       {
         bool plab_refill_failed = false;
@@ -5291,13 +5259,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
             uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
 
-            IFDEF(TRACE, tty->print_cr(
-                             "do_copy2survivor: access %lx (%d bytes) to get %lx",
-                             buffer + 0x30, 8, new_top));
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, new_top));
 
-            IFDEF(TRACE, tty->print_cr(
-                             "do_copy2survivor: access %lx (%d bytes) to get %lx",
-                             buffer + 0x38, 8, new_end));
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, new_end));
 
             // cache 原本为 0，认为是首次初始化，不退出
             bool cache_was_zero = old_top == 0 && old_end == 0;
@@ -5310,10 +5274,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                   "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
                   __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
 
-              // 根据你所在函数的返回类型选择一种：
-              // return NULL;
-              // return false;
-              // fatal("PLAB cache inconsistent");
               assert(true, "PLAB cache inconsistent");
             }
 
@@ -5328,6 +5288,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             obj_ptr = plab_top_cache[worker_id][idx];
             plab_top_cache[worker_id][idx] = obj_ptr + size * 8;
             *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = plab_top_cache[worker_id][idx];
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", plab_buffer_ptr_cache[worker_id][idx] + 0x30, 8, plab_top_cache[worker_id][idx]));
             if (plab_top_end_valid[worker_id][0] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
               plab_top_cache[worker_id][0] = plab_top_cache[worker_id][idx];
           }
@@ -5345,18 +5306,30 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           }
 
           if (plab_refill_failed)
+          {
             *(uint *)((uintptr_t)pss + 0x17c) = 0;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", (uintptr_t)pss + 0x17c, 4, 0));
+          }
 
           // 这里会对后面的dest_attr有影响
           *(int8_t *)(dest_attr_ptr + 1) = 1;
 
           if (dest_attr_ptr == src_region_ptr_cache[worker_id])
+          {
             ((uint8_t *)&src_region_attr_cache[worker_id])[1] = 1;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", (uintptr_t)&src_region_ptr_cache[worker_id] + 1, 1, 1));
+          }
 
           if (dest_attr_ptr == (uintptr_t)pss + 0x178)
+          {
             ((uint8_t *)&dest_attr_cache[worker_id])[1] = 1;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", (uintptr_t)&dest_attr_cache[worker_id] + 1, 1, 1));
+          }
           else if (dest_attr_ptr == (uintptr_t)pss + 0x17a)
+          {
             ((uint8_t *)&dest_attr_cache[worker_id])[3] = 1;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %x", (uintptr_t)&dest_attr_cache[worker_id] + 3, 1, 1));
+          }
           dest_attr_type = 1;
         }
       }
@@ -5365,10 +5338,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
     uintptr_t forward_ptr = 0;
     uintptr_t old_mark = *(uintptr_t *)old;
+    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old, 8, old_mark));
     if (old_mark == m_value)
     {
       forward_ptr = 0;
       *(uintptr_t *)old = m;
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", old, 8, m));
     }
     else
       forward_ptr = old_mark & ~0x3;
@@ -5427,6 +5402,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             // push 这里只push taskqueue_t
             uintptr_t base = pss->getTaskQueueElemsBase();
             *(uintptr_t *)(base + localBot[worker_id] * 8) = old + 0x2;
+            IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", base + localBot[worker_id] * 8, 8, old + 0x2));
             localBot[worker_id] = (localBot[worker_id] + 1) & (TASKQUEUE_SIZE - 1);
           }
 
@@ -5447,9 +5423,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         }
         return obj_ptr;
       }
-      G1ScanEvacuatedObjClosure *scanner = (G1ScanEvacuatedObjClosure *)((uintptr_t)pss + 0x180);
-      G1ScanInYoungSetter x(scanner, scanning_in_young);
-
       // oop_trace
       int vtable_len = *(int *)(klass_ptr + 160);
       int itable_len = *(int *)(klass_ptr + 300);
@@ -5539,6 +5512,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     {
       uintptr_t region_bottom = *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x28);
       uintptr_t region_hard_end = *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x40);
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", plab_buffer_ptr_cache[worker_id][idx] + 0x28, 8, region_bottom));
+      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", plab_buffer_ptr_cache[worker_id][idx] + 0x40, 8, region_hard_end));
       if (obj_ptr >= region_bottom && obj_ptr < region_hard_end)
       {
         int other = idx == 1 ? 0 : 1;
@@ -5547,39 +5522,40 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         if (plab_top_end_valid[worker_id][other] && plab_buffer_ptr_cache[worker_id][0] == plab_buffer_ptr_cache[worker_id][1])
           plab_top_cache[worker_id][other] = obj_ptr;
         *(uintptr_t *)(plab_buffer_ptr_cache[worker_id][idx] + 0x30) = obj_ptr;
+        IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", plab_buffer_ptr_cache[worker_id][idx] + 0x30, 8, obj_ptr));
       }
       else
       {
         // @todo: deletable?
         tty->print_cr("not in region");
 
-        Universe::heap()->fill_with_dummy_object((HeapWord *)obj_ptr, (HeapWord *)obj_ptr + size, true);
-        // size_t words = size / 8;
-        // uintptr_t cur_klass = 0;
-        // if (words >= (UseCompressedClassPointers ? 2 : 3))
-        //{
-        //   size_t payload_size = words - (UseCompressedClassPointers ? 2 : 3);
-        //   size_t len = payload_size * 2;
-        //   *(int *)(obj_ptr + ArrayLenOff) = len;
-        //   IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", obj_ptr + ArrayLenOff, 4, len));
+        // Universe::heap()->fill_with_dummy_object((HeapWord *)obj_ptr, (HeapWord *)obj_ptr + size, true);
+        size_t words = size / 8;
+        uintptr_t cur_klass = 0;
+        if (words >= (UseCompressedClassPointers ? 2 : 3))
+        {
+          size_t payload_size = words - (UseCompressedClassPointers ? 2 : 3);
+          size_t len = payload_size * 2;
+          *(int *)(obj_ptr + ArrayLenOff) = len;
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", obj_ptr + ArrayLenOff, 4, len));
 
-        //  cur_klass = (uintptr_t)Universe::intArrayKlassObj();
-        //}
-        // else if (words > 0)
-        //  cur_klass = (uintptr_t)vmClasses::Object_klass();
-        //*(uintptr_t *)obj_ptr = 0x1;
-        // IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", obj_ptr, 8, 0x1));
+          cur_klass = (uintptr_t)Universe::intArrayKlassObj();
+        }
+        else if (words > 0)
+          cur_klass = (uintptr_t)vmClasses::Object_klass();
+        *(uintptr_t *)obj_ptr = 0x1;
+        IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", obj_ptr, 8, 0x1));
 
-        // if (UseCompressedClassPointers)
-        //{
-        //   *(uint *)(obj_ptr + 0x8) = (cur_klass - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift();
-        //   IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", obj_ptr + 0x8, 4, (uint)(cur_klass - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift()));
-        // }
-        // else
-        //{
-        //   *(uintptr_t *)(obj_ptr + 0x8) = cur_klass;
-        //   IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", obj_ptr + 0x8, 8, cur_klass));
-        // }
+        if (UseCompressedClassPointers)
+        {
+          *(uint *)(obj_ptr + 0x8) = (cur_klass - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift();
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %x", obj_ptr + 0x8, 4, (uint)(cur_klass - (uintptr_t)CompressedKlassPointers::base()) >> CompressedKlassPointers::shift()));
+        }
+        else
+        {
+          *(uintptr_t *)(obj_ptr + 0x8) = cur_klass;
+          IFDEF(TRACE, tty->print_cr("allocate_direct: access %lx (%x bytes) to write %lx", obj_ptr + 0x8, 8, cur_klass));
+        }
       }
       return forward_ptr;
     }
@@ -5627,6 +5603,16 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       // obj = (uintptr_t)pss->copy_to_survivor_space(*(G1HeapRegionAttr *)region_attr_ptr,  (oop)obj, markWord(m_value));
       obj = do_copy_to_survivor_space(region_attr_ptr, src_region_attr_cache[worker_id], obj, m_value, pss, worker_id);
 
+    uint src_shift = src >> pss->getHeapRegionShiftBy();
+    if (src_shift != heap_oop_shift_cache2[worker_id])
+    {
+      heap_oop_shift_cache2[worker_id] = src_shift;
+      uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8);
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
+      heap_type_is_young2[worker_id] = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
+      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
+    }
+
     if (UseCompressedOops)
     {
       uintptr_t writeObj = (obj - (uintptr_t)CompressedOops::base()) >> CompressedOops::shift();
@@ -5641,16 +5627,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     if (((src ^ obj) >> HeapRegion::LogOfHRGrainBytes) == 0)
       return;
-
-    uint src_shift = src >> pss->getHeapRegionShiftBy();
-    if (src_shift != heap_oop_shift_cache2[worker_id])
-    {
-      heap_oop_shift_cache2[worker_id] = src_shift;
-      uintptr_t heap_region = *(uintptr_t *)(pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8);
-      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %lx", pss->getHeapRegionBiasedBase() + (src >> pss->getHeapRegionShiftBy()) * 8, 8, heap_region));
-      heap_type_is_young2[worker_id] = (*(uint *)(heap_region + 0xbc) & 0x2) != 0;
-      IFDEF(TRACE, tty->print_cr("do_oop_evac: access %lx (%d bytes) to get %x", heap_region + 0xbc, 4, *(uint *)(heap_region + 0xbc)));
-    }
 
     if (!heap_type_is_young2[worker_id])
     {
@@ -5683,6 +5659,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     uint remaining_tasks = (array_length - start) / chunk_size;
     uint _task_limit = *(uint *)((uintptr_t)pss + 0x1f0);
     uint _task_fanout = *(uint *)((uintptr_t)pss + 0x1f0 + 0x4);
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1f0, 4, _task_limit));
+    IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x1f0 + 0x4, 4, _task_fanout));
     uint max_pending = (_task_fanout - 1) * task_num + 1;
     uint pending = MIN3(max_pending, remaining_tasks, _task_limit);
     uint ncreate = MIN2(_task_fanout, MIN2(remaining_tasks, _task_limit + 1) - pending);
@@ -5691,6 +5669,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     {
       uintptr_t elems = pss->getTaskQueueElemsBase();
       *(uintptr_t *)(elems + localBot[worker_id] * 8) = from_obj + 0x2;
+      IFDEF(TRACE, tty->print_cr("partial_array: access %lx (%d bytes) to write %lx", elems + localBot[worker_id] * 8, 8, from_obj + 0x2));
       localBot[worker_id] = localBot[worker_id] + 1;
     }
 
@@ -5747,54 +5726,54 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot[worker_id], (uintptr_t)pss);
       uint oop_size_offset = java_lang_Class::get_oop_size_offset();
       uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset();
-      tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
-      tty->print_cr("ref offset %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset());
+      IFDEF(TRACE, tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset));
+      IFDEF(TRACE, tty->print_cr("ref offset %x %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset(), InstanceMirrorKlass::offset_of_static_fields()));
 
       // @notice: print task
-      // if (TRACE)
-      //{
-      //  uint localBot = *(uint *)(bottom_addr);
-      //  uint ageTop = *(uint *)(age_top_addr);
-      //  tty->print_cr("work: access %lx (%x bytes) to get %x", bottom_addr, 4, *(uint *)(bottom_addr));
-      //  tty->print_cr("work: access %lx (%x bytes) to get %x", age_top_addr, 4, *(uint *)(age_top_addr));
-      //  for (int i = localBot - 1; i >= 0; --i)
-      //    IFDEF(TRACE, tty->print_cr("work: access %lx (%x bytes) to get %lx", elems + i * 8, 8, *(uintptr_t *)(elems + i * 8)));
-      //}
+      if (TRACE)
+      {
+        uint localBot = *(uint *)(bottom_addr);
+        uint ageTop = *(uint *)(age_top_addr);
+        tty->print_cr("work: access %lx (%x bytes) to get %x", bottom_addr, 4, *(uint *)(bottom_addr));
+        tty->print_cr("work: access %lx (%x bytes) to get %x", age_top_addr, 4, *(uint *)(age_top_addr));
+        for (int i = localBot - 1; i >= 0; --i)
+          tty->print_cr("work: access %lx (%x bytes) to get %lx", elems + i * 8, 8, *(uintptr_t *)(elems + i * 8));
+      }
 
       // int fd = open("/dev/hwgc", O_RDWR);
-      // struct HWGCParameter
-      //{
-      //   uint32_t chunkSize;
-      //   uint32_t ageThreshold;
-      //   uint32_t heapRegionBias;
-      //   uint32_t regionAttrShiftBy;
-      //   uint32_t heapRegionShiftBy;
-      //   uint32_t logOfHRGrainBytes;
-      //   uint64_t stepperOffset;
-      //   uint64_t youngWordsBase;
-      //   uint64_t regionAttrBase;
-      //   uint64_t plabAllocatorPtr;
-      //   uint64_t regionAttrBiasedBase;
-      //   uint64_t heapRegionBiasedBase;
-      //   uint64_t parScanThreadStatePtr;
-      //   uint64_t taskQueueBottomAddr;
-      //   uint64_t taskQueueElemsBase;
-      //   uint64_t humogousReclaimCandidateBoolBase;
-      //   uint64_t cardTablePtr;
-      //   uint64_t g1h;
-      //   uint64_t intArrayKlass;
-      //   uint64_t objectKlass;
-      //   uint64_t lockPtr;
-      //   uint64_t thread;
-      //   uint64_t dummyRegion;
-      //   uint64_t numaPtr;
-      //   uint64_t compressedOopBase;
-      //   uint64_t compressedKlassPointerBase;
-      //   uint8_t compressedOopShift;
-      //   uint8_t compressedKlassPointerShift;
-      //   uint8_t useCompressedOops;
-      //   uint8_t useCompressedKlassPointers;
-      // };
+      struct HWGCParameter
+      {
+        uint32_t chunkSize;
+        uint32_t ageThreshold;
+        uint32_t heapRegionBias;
+        uint32_t regionAttrShiftBy;
+        uint32_t heapRegionShiftBy;
+        uint32_t logOfHRGrainBytes;
+        uint64_t stepperOffset;
+        uint64_t youngWordsBase;
+        uint64_t regionAttrBase;
+        uint64_t plabAllocatorPtr;
+        uint64_t regionAttrBiasedBase;
+        uint64_t heapRegionBiasedBase;
+        uint64_t parScanThreadStatePtr;
+        uint64_t taskQueueBottomAddr;
+        uint64_t taskQueueElemsBase;
+        uint64_t humogousReclaimCandidateBoolBase;
+        uint64_t cardTablePtr;
+        uint64_t g1h;
+        uint64_t intArrayKlass;
+        uint64_t objectKlass;
+        uint64_t lockPtr;
+        uint64_t thread;
+        uint64_t dummyRegion;
+        uint64_t numaPtr;
+        uint64_t compressedOopBase;
+        uint64_t compressedKlassPointerBase;
+        uint8_t compressedOopShift;
+        uint8_t compressedKlassPointerShift;
+        uint8_t useCompressedOops;
+        uint8_t useCompressedKlassPointers;
+      };
       // enum hwgc_state
       //{
       //   HWGC_IDLE,
@@ -5810,75 +5789,75 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       // #define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
       // #define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
       // #define HWGC_IOC_DEBUG_WRITE _IOW(HWGC_IOC_MAGIC, 3, uint64_t)
-      //  struct HWGCParameter par = {0};
+      struct HWGCParameter par = {0};
       //  int state;
-      //  par.chunkSize = *(int *)((uintptr_t)pss + PARTIAL_ARRAY_CHUNK_SIZE_OFFSET);
-      //  par.ageThreshold = *(uint *)((uintptr_t)pss + 0x17c);
-      //  par.heapRegionBias = pss->getHeapRegionBias();
-      //  par.regionAttrShiftBy = pss->getRegionAttrShiftBy();
-      //  par.heapRegionShiftBy = pss->getHeapRegionShiftBy();
-      //  par.logOfHRGrainBytes = HeapRegion::LogOfHRGrainBytes;
-      //  par.stepperOffset = *(uint64_t *)((uintptr_t)pss + PARTIAL_ARRAY_STEPPER_OFFSET);
-      //  par.youngWordsBase = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
-      //  par.regionAttrBase = pss->getRegionAttrBase();
-      //  par.plabAllocatorPtr = *(uintptr_t *)((uintptr_t)pss + 0x70);
-      //  par.regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
-      //  par.heapRegionBiasedBase = pss->getHeapRegionBiasedBase();
-      //  par.parScanThreadStatePtr = (uintptr_t)pss;
-      //  par.taskQueueBottomAddr = bottom_addr;
-      //  par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
-      //  par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
-      //  par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + CARD_TABLE_OFFSET);
-      //  par.g1h = (uintptr_t)_g1h;
-      //  par.intArrayKlass = (uintptr_t)Universe::intArrayKlassObj();
-      //  par.objectKlass = (uintptr_t)vmClasses::Object_klass();
-      //  par.lockPtr = (uintptr_t)FreeList_lock;
-      //  par.thread = (uintptr_t)Thread::current();
-      //  par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
-      //  par.numaPtr = (uintptr_t)G1NUMA::numa();
-      //  par.compressedOopBase = (uintptr_t)CompressedOops::base();
-      //  par.compressedKlassPointerBase = (uintptr_t)CompressedKlassPointers::base();
-      //  par.compressedOopShift = CompressedOops::shift();
-      //  par.compressedKlassPointerShift = CompressedKlassPointers::shift();
-      //  par.useCompressedOops = UseCompressedOops;
-      //  par.useCompressedKlassPointers = UseCompressedClassPointers;
-      //  Ticks start = Ticks::now();
+      par.chunkSize = *(int *)((uintptr_t)pss + 0x1ec);
+      par.ageThreshold = *(uint *)((uintptr_t)pss + 0x17c);
+      par.heapRegionBias = pss->getHeapRegionBias();
+      par.regionAttrShiftBy = pss->getRegionAttrShiftBy();
+      par.heapRegionShiftBy = pss->getHeapRegionShiftBy();
+      par.logOfHRGrainBytes = HeapRegion::LogOfHRGrainBytes;
+      par.stepperOffset = *(uint64_t *)((uintptr_t)pss + 0x1f0);
+      par.youngWordsBase = *(uintptr_t *)((uintptr_t)pss + 0x1d0);
+      par.regionAttrBase = pss->getRegionAttrBase();
+      par.plabAllocatorPtr = *(uintptr_t *)((uintptr_t)pss + 0x70);
+      par.regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
+      par.heapRegionBiasedBase = pss->getHeapRegionBiasedBase();
+      par.parScanThreadStatePtr = (uintptr_t)pss;
+      par.taskQueueBottomAddr = bottom_addr;
+      par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
+      par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
+      par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + 0x60);
+      par.g1h = (uintptr_t)_g1h;
+      par.intArrayKlass = (uintptr_t)Universe::intArrayKlassObj();
+      par.objectKlass = (uintptr_t)vmClasses::Object_klass();
+      par.lockPtr = (uintptr_t)FreeList_lock;
+      par.thread = (uintptr_t)Thread::current();
+      par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
+      par.numaPtr = (uintptr_t)G1NUMA::numa();
+      par.compressedOopBase = (uintptr_t)CompressedOops::base();
+      par.compressedKlassPointerBase = (uintptr_t)CompressedKlassPointers::base();
+      par.compressedOopShift = CompressedOops::shift();
+      par.compressedKlassPointerShift = CompressedKlassPointers::shift();
+      par.useCompressedOops = UseCompressedOops;
+      par.useCompressedKlassPointers = UseCompressedClassPointers;
+      // Ticks start = Ticks::now();
 
-      // if (TRACE)
-      //{
-      //   tty->print_cr("=== Dumping 'par' struct ===");
-      //   tty->print_cr("par.chunkSize = %d", par.chunkSize);
-      //   tty->print_cr("par.ageThreshold = %u", par.ageThreshold);
-      //   tty->print_cr("par.heapRegionBias = %u", par.heapRegionBias);
-      //   tty->print_cr("par.regionAttrShiftBy = %u", par.regionAttrShiftBy);
-      //   tty->print_cr("par.heapRegionShiftBy = %u", par.heapRegionShiftBy);
-      //   tty->print_cr("par.logOfHRGrainBytes = %d", par.logOfHRGrainBytes);
-      //   tty->print_cr("par.stepperOffset = " UINT64_FORMAT, par.stepperOffset);
-      //   tty->print_cr("par.youngWordsBase = " PTR_FORMAT, par.youngWordsBase);
-      //   tty->print_cr("par.regionAttrBase = " PTR_FORMAT, par.regionAttrBase);
-      //   tty->print_cr("par.plabAllocatorPtr = " PTR_FORMAT, par.plabAllocatorPtr);
-      //   tty->print_cr("par.regionAttrBiasedBase = " PTR_FORMAT, par.regionAttrBiasedBase);
-      //   tty->print_cr("par.heapRegionBiasedBase = " PTR_FORMAT, par.heapRegionBiasedBase);
-      //   tty->print_cr("par.parScanThreadStatePtr = " PTR_FORMAT, par.parScanThreadStatePtr);
-      //   tty->print_cr("par.taskQueueBottomAddr = " PTR_FORMAT, par.taskQueueBottomAddr);
-      //   tty->print_cr("par.taskQueueElemsBase = " PTR_FORMAT, par.taskQueueElemsBase);
-      //   tty->print_cr("par.humogousReclaimCandidateBoolBase = " PTR_FORMAT, par.humogousReclaimCandidateBoolBase);
-      //   tty->print_cr("par.cardTablePtr = " PTR_FORMAT, par.cardTablePtr);
-      //   tty->print_cr("par.g1h = " PTR_FORMAT, par.g1h);
-      //   tty->print_cr("par.intArrayKlass = " PTR_FORMAT, par.intArrayKlass);
-      //   tty->print_cr("par.objectKlass = " PTR_FORMAT, par.objectKlass);
-      //   tty->print_cr("par.lockPtr = " PTR_FORMAT, par.lockPtr);
-      //   tty->print_cr("par.thread = " PTR_FORMAT, par.thread);
-      //   tty->print_cr("par.dummyRegion = " PTR_FORMAT, par.dummyRegion);
-      //   tty->print_cr("par.numaPtr = " PTR_FORMAT, par.numaPtr);
-      //   tty->print_cr("par.compressedOopBase = " PTR_FORMAT, par.compressedOopBase);
-      //   tty->print_cr("par.compressedKlassPointerBase = " PTR_FORMAT, par.compressedKlassPointerBase);
-      //   tty->print_cr("par.compressedOopShift = %d", par.compressedOopShift);
-      //   tty->print_cr("par.compressedKlassPointerShift = %d", par.compressedKlassPointerShift);
-      //   tty->print_cr("par.useCompressedOops = %d", par.useCompressedOops);
-      //   tty->print_cr("par.useCompressedKlassPointers = %d", par.useCompressedKlassPointers);
-      //   tty->print_cr("=== End of 'par' dump ===");
-      // }
+      if (TRACE)
+      {
+        tty->print_cr("=== Dumping 'par' struct ===");
+        tty->print_cr("par.chunkSize = %d", par.chunkSize);
+        tty->print_cr("par.ageThreshold = %u", par.ageThreshold);
+        tty->print_cr("par.heapRegionBias = %u", par.heapRegionBias);
+        tty->print_cr("par.regionAttrShiftBy = %u", par.regionAttrShiftBy);
+        tty->print_cr("par.heapRegionShiftBy = %u", par.heapRegionShiftBy);
+        tty->print_cr("par.logOfHRGrainBytes = %d", par.logOfHRGrainBytes);
+        tty->print_cr("par.stepperOffset = " UINT64_FORMAT, par.stepperOffset);
+        tty->print_cr("par.youngWordsBase = " PTR_FORMAT, par.youngWordsBase);
+        tty->print_cr("par.regionAttrBase = " PTR_FORMAT, par.regionAttrBase);
+        tty->print_cr("par.plabAllocatorPtr = " PTR_FORMAT, par.plabAllocatorPtr);
+        tty->print_cr("par.regionAttrBiasedBase = " PTR_FORMAT, par.regionAttrBiasedBase);
+        tty->print_cr("par.heapRegionBiasedBase = " PTR_FORMAT, par.heapRegionBiasedBase);
+        tty->print_cr("par.parScanThreadStatePtr = " PTR_FORMAT, par.parScanThreadStatePtr);
+        tty->print_cr("par.taskQueueBottomAddr = " PTR_FORMAT, par.taskQueueBottomAddr);
+        tty->print_cr("par.taskQueueElemsBase = " PTR_FORMAT, par.taskQueueElemsBase);
+        tty->print_cr("par.humogousReclaimCandidateBoolBase = " PTR_FORMAT, par.humogousReclaimCandidateBoolBase);
+        tty->print_cr("par.cardTablePtr = " PTR_FORMAT, par.cardTablePtr);
+        tty->print_cr("par.g1h = " PTR_FORMAT, par.g1h);
+        tty->print_cr("par.intArrayKlass = " PTR_FORMAT, par.intArrayKlass);
+        tty->print_cr("par.objectKlass = " PTR_FORMAT, par.objectKlass);
+        tty->print_cr("par.lockPtr = " PTR_FORMAT, par.lockPtr);
+        tty->print_cr("par.thread = " PTR_FORMAT, par.thread);
+        tty->print_cr("par.dummyRegion = " PTR_FORMAT, par.dummyRegion);
+        tty->print_cr("par.numaPtr = " PTR_FORMAT, par.numaPtr);
+        tty->print_cr("par.compressedOopBase = " PTR_FORMAT, par.compressedOopBase);
+        tty->print_cr("par.compressedKlassPointerBase = " PTR_FORMAT, par.compressedKlassPointerBase);
+        tty->print_cr("par.compressedOopShift = %d", par.compressedOopShift);
+        tty->print_cr("par.compressedKlassPointerShift = %d", par.compressedKlassPointerShift);
+        tty->print_cr("par.useCompressedOops = %d", par.useCompressedOops);
+        tty->print_cr("par.useCompressedKlassPointers = %d", par.useCompressedKlassPointers);
+        tty->print_cr("=== End of 'par' dump ===");
+      }
 
       // tty->print_cr("work start");
       //  ioctl(fd, HWGC_IOC_START, &par);
