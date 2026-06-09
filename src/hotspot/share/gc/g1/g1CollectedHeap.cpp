@@ -5337,12 +5337,10 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     uintptr_t m = (obj_ptr & ~0x3) | 0x3;
     uintptr_t forward_ptr = 0;
-    uintptr_t old_mark = *(uintptr_t *)old;
-    IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", old, 8, old_mark));
+    uintptr_t old_mark = Atomic::cmpxchg((uintptr_t *)old, m_value, m);
     if (old_mark == m_value)
     {
       forward_ptr = 0;
-      *(uintptr_t *)old = m;
       IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to write %lx", old, 8, m));
     }
     else
