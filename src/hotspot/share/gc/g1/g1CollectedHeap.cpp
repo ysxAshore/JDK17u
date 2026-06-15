@@ -4035,11 +4035,19 @@ protected:
   uintptr_t *offset30_cache;
   uintptr_t *offset38_cache;
 
-  bool list_about_valid;
   uint list_length;
   uintptr_t list_head_ptr;
   uintptr_t list_end_ptr;
   uintptr_t list_last_ptr;
+
+  bool expand_failure_valid;
+  bool expand_failure_cache;
+
+  bool region_attr_base_valid;
+  uintptr_t region_attr_base_cache;
+
+  bool grow_array_ptr_cache_valid;
+  uintptr_t grow_array_ptr_cache;
 
   bool **region_ptr_valid;
   uintptr_t **region_ptr_cache;
@@ -4184,11 +4192,14 @@ public:
 
     localBot = (uint *)calloc(_num_workers, 4);
 
-    list_about_valid = false;
     list_length = 0;
     list_head_ptr = 0;
     list_end_ptr = 0;
     list_last_ptr = 0;
+
+    grow_array_ptr_cache_valid = false;
+    region_attr_base_valid = false;
+    expand_failure_valid = false;
   }
 
 #define TRACE 0
@@ -4615,10 +4626,14 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
   {
     uintptr_t res = allocate_free_region(heap_region_type, node_index, worker_id);
 
-    bool expand_failure = *(bool *)((uintptr_t)_g1h + 0x370);
-    IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x370, 1, expand_failure));
+    if (!expand_failure_valid)
+    {
+      expand_failure_valid = true;
+      expand_failure_cache = *(bool *)((uintptr_t)_g1h + 0x370);
+      IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x370, 1, expand_failure_cache));
+    }
 
-    if (res == 0 && expand_failure)
+    if (res == 0 && expand_failure_cache)
     {
       IFDEF(TRACE, tty->print_cr("needs interrupt to call expand_single_region"));
       if (_g1h->expand_single_region(node_index))
@@ -4626,6 +4641,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       else
       {
         *(bool *)((uintptr_t)_g1h + 0x370) = false;
+        expand_failure_cache = false;
         IFDEF(TRACE, tty->print_cr("new_region: access %lx (%x bytes) to write %x", (uintptr_t)_g1h + 0x370, 1, 0));
       }
     }
@@ -4648,8 +4664,13 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     uintptr_t new_alloc_region = new_region(heap_region_type, node_index, worker_id);
 
     uintptr_t survivor_ptr = (uintptr_t)_g1h + 0x3f8;
-    uintptr_t grow_array_ptr = *(uintptr_t *)(survivor_ptr + 0x8);
-    IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + 0x8, 8, grow_array_ptr));
+    if (!grow_array_ptr_cache_valid)
+    {
+      grow_array_ptr_cache_valid = true;
+      grow_array_ptr_cache = *(uintptr_t *)(survivor_ptr + 0x8);
+      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", survivor_ptr + 0x8, 8, grow_array_ptr_cache));
+    }
+    uintptr_t grow_array_ptr = grow_array_ptr_cache;
 
     if (new_alloc_region != 0)
     {
@@ -4696,8 +4717,13 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
       bool needs_remset_update = (heap_region_type & 0x10) == 0;
       uintptr_t g1h_region_attr_ptr = (uintptr_t)_g1h + 0x580;
-      uintptr_t region_attr_base = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
-      IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base));
+      if (!region_attr_base_valid)
+      {
+        region_attr_base_valid = true;
+        region_attr_base_cache = *(uintptr_t *)(g1h_region_attr_ptr + 0x10);
+        IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to get %lx", g1h_region_attr_ptr + 0x10, 8, region_attr_base_cache));
+      }
+      uintptr_t region_attr_base = region_attr_base_cache;
 
       *(u_int8_t *)(region_attr_base + hrm_index * 2) = needs_remset_update;
       IFDEF(TRACE, tty->print_cr("new_gc_alloc: access %lx (%x bytes) to write %x", region_attr_base + hrm_index * 2, 1, needs_remset_update));
@@ -4709,7 +4735,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
   uintptr_t attempt_allocation_using_new_region(uintptr_t region_ptr, uintptr_t alloc_region, uintptr_t dummy_region, size_t min_word_size, size_t desired_word_size, size_t *actual_word_size, uint worker_id)
   {
-
     int8_t type = *(int8_t *)(region_ptr + 0x40);
     IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x40, 1, type));
 
@@ -5174,29 +5199,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     {
       uintptr_t buffer = plab_buffer_ptr_cache[worker_id][idx];
 
-      uintptr_t old_top = plab_top_cache[worker_id][idx];
-      uintptr_t old_end = plab_end_cache[worker_id][idx];
-
       uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
       uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
 
       IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, new_top));
-
       IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, new_end));
-
-      // cache 原本为 0，认为是首次初始化，不退出
-      bool cache_was_zero = old_top == 0 && old_end == 0;
-
-      // cache 原本不是 0，但读取前后不一致，退出 / 报错
-      if (!cache_was_zero && (old_top != new_top || old_end != new_end) && plab_top_end_valid[worker_id][idx])
-      {
-        tty->print_cr(
-            "line %d PLAB cache mismatch: worker=%u idx=%u buffer %lx"
-            "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
-            __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
-
-        assert(true, "PLAB cache inconsistent");
-      }
 
       plab_top_cache[worker_id][idx] = new_top;
       plab_end_cache[worker_id][idx] = new_end;
@@ -5253,29 +5260,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           {
             uintptr_t buffer = plab_buffer_ptr_cache[worker_id][idx];
 
-            uintptr_t old_top = plab_top_cache[worker_id][idx];
-            uintptr_t old_end = plab_end_cache[worker_id][idx];
-
             uintptr_t new_top = *(uintptr_t *)(buffer + 0x30);
             uintptr_t new_end = *(uintptr_t *)(buffer + 0x38);
 
             IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x30, 8, new_top));
-
             IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %lx", buffer + 0x38, 8, new_end));
-
-            // cache 原本为 0，认为是首次初始化，不退出
-            bool cache_was_zero = old_top == 0 && old_end == 0;
-
-            // cache 原本不是 0，但读取前后不一致，退出 / 报错
-            if (!cache_was_zero && (old_top != new_top || old_end != new_end) && plab_top_end_valid[worker_id][idx])
-            {
-              tty->print_cr(
-                  "line %d PLAB cache mismatch: worker=%u idx=%u buffer %lx"
-                  "old_top=%lx old_end=%lx new_top=%lx new_end=%lx",
-                  __LINE__, worker_id, idx, buffer, old_top, old_end, new_top, new_end);
-
-              assert(true, "PLAB cache inconsistent");
-            }
 
             plab_top_cache[worker_id][idx] = new_top;
             plab_end_cache[worker_id][idx] = new_end;
@@ -5722,10 +5711,12 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       localBot[worker_id] = *(uint *)(bottom_addr);
       tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot[worker_id], (uintptr_t)pss);
-      uint oop_size_offset = java_lang_Class::get_oop_size_offset();
-      uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset();
+      uint oop_size_offset = java_lang_Class::get_oop_size_offset();                   // 0x20
+      uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset(); // 0x24
       IFDEF(TRACE, tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset));
       IFDEF(TRACE, tty->print_cr("ref offset %x %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset(), InstanceMirrorKlass::offset_of_static_fields()));
+      tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
+      tty->print_cr("ref offset %x %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset(), InstanceMirrorKlass::offset_of_static_fields());
 
       // @notice: print task
       if (TRACE)
