@@ -4049,6 +4049,10 @@ protected:
   bool grow_array_ptr_cache_valid;
   uintptr_t grow_array_ptr_cache;
 
+  bool during_im_valid;
+  bool during_im_cache;
+  uintptr_t cm_cache;
+
   bool **region_ptr_valid;
   uintptr_t **region_ptr_cache;
 
@@ -4200,6 +4204,7 @@ public:
     grow_array_ptr_cache_valid = false;
     region_attr_base_valid = false;
     expand_failure_valid = false;
+    during_im_valid = false;
   }
 
 #define TRACE 0
@@ -4738,6 +4743,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     int8_t type = *(int8_t *)(region_ptr + 0x40);
     IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x40, 1, type));
 
+    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size, type, worker_id);
+
     if (alloc_region != dummy_region)
     {
       // fill up can set false
@@ -4765,21 +4772,24 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", survivor_ptr + 0x10, 8, *(uintptr_t *)(survivor_ptr + 0x10)));
       }
 
-      bool during_im = *(bool *)((uintptr_t)_g1h + 0x3c1);
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im));
-
-      if (during_im && allocated_bytes > 0)
+      if (!during_im_valid)
       {
-        uintptr_t cm = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
-        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x4e8, 8, cm));
+        during_im_valid = true;
+        during_im_cache = *(bool *)((uintptr_t)_g1h + 0x3c1);
+        cm_cache = *(uintptr_t *)((uintptr_t)_g1h + 0x4e8);
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", (uintptr_t)_g1h + 0x3c1, 1, during_im_cache));
+        IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", (uintptr_t)_g1h + 0x4e8, 8, cm_cache));
+      }
 
+      if (during_im_cache && allocated_bytes > 0)
+      {
         uintptr_t start = *(uintptr_t *)(alloc_region + 0xe8);
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0xe8, 8, start));
 
         uintptr_t end = *(uintptr_t *)(alloc_region + 0x10);
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", alloc_region + 0x10, 8, end));
 
-        uintptr_t root_regions_ptr = cm + 0xb0;
+        uintptr_t root_regions_ptr = cm_cache + 0xb0;
         uintptr_t root_regions_array = *(uintptr_t *)(root_regions_ptr);
         IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %lx", root_regions_ptr, 8, root_regions_array));
 
@@ -4807,10 +4817,14 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x8, 8, dummy_region));
     }
 
-    uintptr_t new_alloc_region = new_gc_alloc_region(region_ptr, desired_word_size, type, worker_id);
-
     if (new_alloc_region != 0)
     {
+      bool bot_updates = *(bool *)(region_ptr + 0x20);
+      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x20, 1, bot_updates));
+
+      size_t temp;
+      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates, worker_id);
+
       *(uintptr_t *)(new_alloc_region + 0xa8) = 0;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %x", new_alloc_region + 0xa8, 8, 0));
 
@@ -4821,12 +4835,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
       *(uintptr_t *)(region_ptr + 0x18) = top - bottom;
       IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to write %lx", region_ptr + 0x18, 8, top - bottom));
-
-      bool bot_updates = *(bool *)(region_ptr + 0x20);
-      IFDEF(TRACE, tty->print_cr("attempt_allocation: access %lx (%x bytes) to get %x", region_ptr + 0x20, 1, bot_updates));
-
-      size_t temp;
-      uintptr_t result = par_allocate(new_alloc_region, desired_word_size, desired_word_size, &temp, bot_updates, worker_id);
 
       *(uintptr_t *)(region_ptr + 0x8) = new_alloc_region;
       for (uint i = 0; i < _num_workers; ++i)
