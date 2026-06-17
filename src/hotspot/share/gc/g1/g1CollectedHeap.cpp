@@ -4899,15 +4899,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
             IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
           }
           result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-          if (*(uint *)(lock_ptr + 8) > 1)
+          uint old_lock_value = Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)1, (uint)0);
+          if (old_lock_value > 1)
           {
             tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
             ((Mutex *)(lock_ptr))->unlock();
-          }
-          else
-          {
-            *(uint *)(lock_ptr + 8) = 0;
-            IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", lock_ptr + 8, 4, 0));
           }
         }
 
@@ -4929,15 +4925,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
               }
               result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-              if (*(uint *)(lock_ptr + 8) > 1)
+              uint old_lock_value = Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)1, (uint)0);
+              if (old_lock_value > 1)
               {
-                ((Mutex *)(lock_ptr))->unlock();
                 tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
-              }
-              else
-              {
-                *(uint *)(lock_ptr + 8) = 0;
-                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", lock_ptr + 8, 4, 0));
+                ((Mutex *)(lock_ptr))->unlock();
               }
             }
 
@@ -4961,15 +4953,11 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
                 uintptr_t addr = allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11);
                 IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", addr, 1, true));
               }
-              if (*(uint *)(freelist_lock_ptr + 8) > 1)
+              uint old_lock_value = Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)1, (uint)0);
+              if (old_lock_value > 1)
               {
                 FreeList_lock->unlock();
                 tty->print_cr("par_allocate freelist lock unlock");
-              }
-              else
-              {
-                *(uint *)(freelist_lock_ptr + 8) = 0;
-                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", freelist_lock_ptr + 8, 4, 0));
               }
             }
           }
