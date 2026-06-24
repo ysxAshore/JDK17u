@@ -22,7 +22,10 @@
  *
  */
 #include <linux/ioctl.h>
+#include <linux/perf_event.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
+
 #include "precompiled.hpp"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/metadataOnStackMark.hpp"
@@ -4011,6 +4014,7 @@ void G1CollectedHeap::pre_evacuate_collection_set(G1EvacuationInfo *evacuation_i
 class G1EvacuateRegionsBaseTask : public AbstractGangTask
 {
 protected:
+  int *fd;
   G1CollectedHeap *_g1h;
   G1ParScanThreadStateSet *_per_thread_states;
   G1ScannerTasksQueueSet *_task_queues;
@@ -4124,6 +4128,21 @@ protected:
   virtual void evacuate_live_objects(G1ParScanThreadState *pss, uint worker_id) = 0;
 
 public:
+  ~G1EvacuateRegionsBaseTask()
+  {
+    if (fd)
+    {
+      for (uint i = 0; i < _num_workers; i++)
+      {
+        if (fd[i] >= 0)
+        {
+          close(fd[i]);
+        }
+      }
+      free(fd);
+    }
+  }
+
   G1EvacuateRegionsBaseTask(const char *name,
                             G1ParScanThreadStateSet *per_thread_states,
                             G1ScannerTasksQueueSet *task_queues,
@@ -4170,6 +4189,8 @@ public:
     alloc_region_valid = (bool **)calloc(_num_workers, sizeof(bool *));
     alloc_region_cache = (uintptr_t **)calloc(_num_workers, sizeof(uintptr_t *));
 
+    fd = (int *)calloc(_num_workers, 4);
+    char path[16];
     for (uint i = 0; i < num_workers; ++i)
     {
       plab_buffer_valid[i] = (bool *)calloc(2, sizeof(bool));
@@ -4183,6 +4204,9 @@ public:
       region_ptr_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
       alloc_region_valid[i] = (bool *)calloc(2, sizeof(bool));
       alloc_region_cache[i] = (uintptr_t *)calloc(2, sizeof(uintptr_t));
+
+      snprintf(path, sizeof(path), "/dev/hwgc%d", i);
+      fd[i] = open(path, O_RDWR);
     }
 
     heap_oop_shift_cache = (uint *)calloc(_num_workers, 4);
@@ -5691,6 +5715,51 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       do_partial_array(task - 0x2, pss, worker_id);
   }
 
+  static long perf_event_open(struct perf_event_attr *hw_event,
+                              pid_t pid,
+                              int cpu,
+                              int group_fd,
+                              unsigned long flags)
+  {
+    return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+  }
+
+  static int open_cycle_counter(bool include_kernel)
+  {
+    struct perf_event_attr pe;
+    memset(&pe, 0, sizeof(pe));
+
+    pe.type = PERF_TYPE_HARDWARE;
+    pe.size = sizeof(pe);
+    pe.config = PERF_COUNT_HW_CPU_CYCLES;
+
+    pe.disabled = 1;
+    pe.exclude_hv = 1;
+
+    /*
+     * 如果你要统计 open/ioctl/read/write 这种系统调用，
+     * 最好 include_kernel = true。
+     *
+     * 但是某些系统权限不允许统计 kernel cycles，
+     * 这时 perf_event_open 可能失败。
+     */
+    pe.exclude_kernel = include_kernel ? 0 : 1;
+
+    /*
+     * pid = 0, cpu = -1:
+     * 统计当前线程在任意 CPU 上运行时的 cycles。
+     */
+    int fd = perf_event_open(&pe, 0, -1, -1, 0);
+    return fd;
+  }
+
+  inline uint64_t now_ns(void)
+  {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+  }
+
   void work(uint worker_id)
   {
     start_work(worker_id);
@@ -5707,8 +5776,8 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       localBot[worker_id] = *(uint *)(bottom_addr);
       tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot[worker_id], (uintptr_t)pss);
-      uint oop_size_offset = java_lang_Class::get_oop_size_offset();                   // 0x20
-      uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset(); // 0x24
+      uint oop_size_offset = java_lang_Class::get_oop_size_offset();                   // 0x20 0x24
+      uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset(); // 0x24 0x28 0xb8
       IFDEF(TRACE, tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset));
       IFDEF(TRACE, tty->print_cr("ref offset %x %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset(), InstanceMirrorKlass::offset_of_static_fields()));
       tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset);
@@ -5725,14 +5794,13 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
           tty->print_cr("work: access %lx (%x bytes) to get %lx", elems + i * 8, 8, *(uintptr_t *)(elems + i * 8));
       }
 
-      // int fd = open("/dev/hwgc", O_RDWR);
       struct HWGCParameter
       {
         uint32_t chunkSize;
         uint32_t ageThreshold;
         uint32_t heapRegionBias;
-        uint32_t regionAttrShiftBy;
         uint32_t heapRegionShiftBy;
+        uint32_t regionAttrShiftBy;
         uint32_t logOfHRGrainBytes;
         uint64_t stepperOffset;
         uint64_t youngWordsBase;
@@ -5741,7 +5809,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         uint64_t regionAttrBiasedBase;
         uint64_t heapRegionBiasedBase;
         uint64_t parScanThreadStatePtr;
-        uint64_t taskQueueBottomAddr;
+        uint32_t localBot;
         uint64_t taskQueueElemsBase;
         uint64_t humogousReclaimCandidateBoolBase;
         uint64_t cardTablePtr;
@@ -5751,7 +5819,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         uint64_t lockPtr;
         uint64_t thread;
         uint64_t dummyRegion;
-        uint64_t numaPtr;
         uint64_t compressedOopBase;
         uint64_t compressedKlassPointerBase;
         uint8_t compressedOopShift;
@@ -5759,23 +5826,32 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         uint8_t useCompressedOops;
         uint8_t useCompressedKlassPointers;
       };
-      // enum hwgc_state
-      //{
-      //   HWGC_IDLE,
-      //   HWGC_RUNNING,
-      //   HWGC_WAIT_MALLOC,
-      //   HWGC_WAIT_ENQUEUED,
-      //   HWGC_WAIT_PAGEFAULT,
-      //   HWGC_DEBUG,
-      //   HWGC_DONE
-      // };
-      // #define HWGC_IOC_MAGIC 'H'
-      // #define HWGC_IOC_START _IOW(HWGC_IOC_MAGIC, 0, struct HWGCParameter)
-      // #define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 1, int)
-      // #define HWGC_IOC_SOFT_PROVIDE _IOW(HWGC_IOC_MAGIC, 2, uint64_t)
-      // #define HWGC_IOC_DEBUG_WRITE _IOW(HWGC_IOC_MAGIC, 3, uint64_t)
+
+#define HWGC_EVENT_NONE 0
+#define HWGC_EVENT_DONE 1
+#define HWGC_EVENT_GROW 2
+#define HWGC_EVENT_EXPAND 3
+#define HWGC_EVENT_ALLOCATE 4
+#define HWGC_EVENT_WAKE 5
+#define HWGC_EVENT_ERROR 6
+
+      struct HWGCEvent
+      {
+        uint32_t type;
+        uint32_t reserved;
+        uint64_t seq;
+        uint64_t par0;
+        uint64_t par1;
+        uint64_t res0;
+        uint64_t res1;
+      };
+#define HWGC_IOC_MAGIC 'x'
+#define HWGC_IOC_START _IOWR(HWGC_IOC_MAGIC, 1, struct HWGCParameter)
+#define HWGC_IOC_WAIT_EVENT _IOR(HWGC_IOC_MAGIC, 2, struct HWGCEvent)
+#define HWGC_IOC_REPLY_EVENT _IOW(HWGC_IOC_MAGIC, 3, struct HWGCEvent)
+
       struct HWGCParameter par = {0};
-      //  int state;
+      struct HWGCEvent event = {0};
       par.chunkSize = *(int *)((uintptr_t)pss + 0x1ec);
       par.ageThreshold = *(uint *)((uintptr_t)pss + 0x17c);
       par.heapRegionBias = pss->getHeapRegionBias();
@@ -5789,7 +5865,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       par.regionAttrBiasedBase = pss->getRegionAttrBiasedBase();
       par.heapRegionBiasedBase = pss->getHeapRegionBiasedBase();
       par.parScanThreadStatePtr = (uintptr_t)pss;
-      par.taskQueueBottomAddr = bottom_addr;
+      par.localBot = localBot[worker_id];
       par.taskQueueElemsBase = pss->getTaskQueueElemsBase();
       par.humogousReclaimCandidateBoolBase = _g1h->getHumongousReclaimCandidatesBoolBase();
       par.cardTablePtr = *(uintptr_t *)((uintptr_t)pss + 0x60);
@@ -5799,7 +5875,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       par.lockPtr = (uintptr_t)FreeList_lock;
       par.thread = (uintptr_t)Thread::current();
       par.dummyRegion = (uintptr_t)G1AllocRegion::_dummy_region;
-      par.numaPtr = (uintptr_t)G1NUMA::numa();
       par.compressedOopBase = (uintptr_t)CompressedOops::base();
       par.compressedKlassPointerBase = (uintptr_t)CompressedKlassPointers::base();
       par.compressedOopShift = CompressedOops::shift();
@@ -5824,7 +5899,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         tty->print_cr("par.regionAttrBiasedBase = " PTR_FORMAT, par.regionAttrBiasedBase);
         tty->print_cr("par.heapRegionBiasedBase = " PTR_FORMAT, par.heapRegionBiasedBase);
         tty->print_cr("par.parScanThreadStatePtr = " PTR_FORMAT, par.parScanThreadStatePtr);
-        tty->print_cr("par.taskQueueBottomAddr = " PTR_FORMAT, par.taskQueueBottomAddr);
+        tty->print_cr("par.localBot = %u", par.localBot);
         tty->print_cr("par.taskQueueElemsBase = " PTR_FORMAT, par.taskQueueElemsBase);
         tty->print_cr("par.humogousReclaimCandidateBoolBase = " PTR_FORMAT, par.humogousReclaimCandidateBoolBase);
         tty->print_cr("par.cardTablePtr = " PTR_FORMAT, par.cardTablePtr);
@@ -5834,7 +5909,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         tty->print_cr("par.lockPtr = " PTR_FORMAT, par.lockPtr);
         tty->print_cr("par.thread = " PTR_FORMAT, par.thread);
         tty->print_cr("par.dummyRegion = " PTR_FORMAT, par.dummyRegion);
-        tty->print_cr("par.numaPtr = " PTR_FORMAT, par.numaPtr);
         tty->print_cr("par.compressedOopBase = " PTR_FORMAT, par.compressedOopBase);
         tty->print_cr("par.compressedKlassPointerBase = " PTR_FORMAT, par.compressedKlassPointerBase);
         tty->print_cr("par.compressedOopShift = %d", par.compressedOopShift);
@@ -5844,128 +5918,194 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         tty->print_cr("=== End of 'par' dump ===");
       }
 
-      // tty->print_cr("work start");
-      //  ioctl(fd, HWGC_IOC_START, &par);
-      //  while (1)
-      //{
-      //    ioctl(fd, HWGC_IOC_WAIT_EVENT, &state);
-      //    if (state == HWGC_DONE)
-      //    {
-      //      Ticks end = Ticks::now();
-      //      jlong nanos = (end - start).nanoseconds();
-      //      tty->print_cr("work done, time is %ld ns", nanos);
-      //      break;
-      //    }
-      //    if (state == HWGC_WAIT_ENQUEUED)
-      //    {
-      //      lseek(fd, 0xe0, SEEK_SET);
-      //      uint64_t allocator_ptr, buffer = 0;
-      //      read(fd, &allocator_ptr, sizeof(allocator_ptr));
-      //      buffer = (uintptr_t)BufferNode::allocate(*(size_t *)allocator_ptr);
-      //      ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &buffer);
-      //    }
-      //    if (state == HWGC_WAIT_MALLOC)
-      //    {
-      //      lseek(fd, 0xe0, SEEK_SET);
+      char path[16];
+      snprintf(path, sizeof(path), "/dev/hwgc%d", worker_id);
 
-      //    uintptr_t grow_array_ptr, len;
-      //    read(fd, &grow_array_ptr, 8);
-      //    read(fd, &len, 4);
-      //    ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &len);
-      //  }
-      //  if (state == HWGC_WAIT_PAGEFAULT)
-      //  {
-      //    lseek(fd, 0xe0, SEEK_SET);
-      //    uintptr_t vaddr, data, write, size;
-      //    read(fd, &vaddr, sizeof(vaddr));
-      //    read(fd, &data, sizeof(data));
-      //    read(fd, &write, sizeof(write));
-      //    read(fd, &size, sizeof(size));
-      //    if ((vaddr >> 40) != 0 || (vaddr & 0xf000000000ull) != 0xf000000000ull)
-      //      tty->print_cr("%lx %lx %lx %lx\n", vaddr, data, write, size);
+      if (fd[worker_id] < 0)
+        fd[worker_id] = open(path, O_RDWR);
 
-      //    uint64_t return_value = 0;
-      //    if (write)
-      //      memcpy((void *)vaddr, &data, size);
-      //    else
-      //      memcpy(&return_value, (void *)vaddr, size);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &return_value);
-      //  }
-      //  if (state == HWGC_DEBUG)
-      //  {
-      //    lseek(fd, 0xe0, SEEK_SET);
-
-      //    // uintptr_t dest_attr_type, min_word_size, desired_word_size, allocator_ptr;
-      //    // read(fd, &dest_attr_type, 8);
-      //    // read(fd, &min_word_size, 8);
-      //    // read(fd, &desired_word_size, 8);
-      //    // read(fd, &allocator_ptr, 8);
-      //    // uintptr_t temp;
-      //    // uintptr_t obj = par_allocate_during_gc_debug((int8_t)dest_attr_type, min_word_size, desired_word_size, &temp, 0, allocator_ptr, pss);
-      //    // ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj);
-      //    // uintptr_t region_ptr, desired_word_size;
-      //    // read(fd, &region_ptr, 8);
-      //    // read(fd, &desired_word_size, 8);
-      //    // uintptr_t temp;
-      //    //// uintptr_t obj_ptr = attempt_allocation_using_new_region_debug(region_ptr, desired_word_size, &temp);
-      //    //// ioctl(fd, HWGC_IOC_DEBUG_WRITE, &temp);
-      //    // uintptr_t obj_ptr = new_gc_alloc_region(region_ptr, desired_word_size);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-
-      //    // uintptr_t desired_word_size, heap_region_type, node_index;
-      //    // read(fd, &desired_word_size, 8);
-      //    // read(fd, &heap_region_type, 8);
-      //    // read(fd, &node_index, 8);
-      //    // size_t temp;
-      //    // uintptr_t obj_ptr = new_region(desired_word_size, (uint)heap_region_type, (uint)node_index);
-      //    // ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-
-      //    uintptr_t node_index;
-      //    read(fd, &node_index, 8);
-      //    uintptr_t obj_ptr = _g1h->expand_single_region(node_index);
-      //    ioctl(fd, HWGC_IOC_SOFT_PROVIDE, &obj_ptr);
-      //  }
-      //}
-      // close(fd);
-
-      bool tag = false; // 决定是否需要分发处理该task
-      do
+      int perf_fd = open_cycle_counter(true);
+      if (perf_fd < 0)
+        printf("perf_event_open failed: %s\n", strerror(errno));
+      uint64_t t0_ns = now_ns();
+      if (perf_fd >= 0)
       {
-        uintptr_t task;
-        if (localBot[worker_id] <= 0)
-          tag = false;
-        else
-        {
-          localBot[worker_id] = (localBot[worker_id] - 1) & (TASKQUEUE_SIZE - 1);
-          task = *(uintptr_t *)(elems + localBot[worker_id] * 8);
-          tag = true;
-        }
-        if (tag)
-          dispatch_task(task, pss, worker_id);
-      } while (tag);
-
-      *(uint *)bottom_addr = localBot[worker_id];
-      // evacuate_live_objects(pss, worker_id);
-      tty->print_cr("thread %d, work done", worker_id);
-
-      if (last_index_valid[worker_id])
-        *(size_t *)((uintptr_t)pss + 0x1b0) = last_index_cache[worker_id];
-      if (parScan_offset40_valid[worker_id])
-      {
-        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
-        *(size_t *)(rdc_local_qset_ptr + 0x30) = index_cache[worker_id];
-        *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buffer_cache[worker_id];
+        ioctl(perf_fd, PERF_EVENT_IOC_RESET, 0);
+        ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0);
       }
-      if (parScan_offset20_valid[worker_id])
+
+      if (fd[worker_id] < 0)
       {
-        uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
-        *(size_t *)(rdc_local_qset_ptr + 0x18) = offset30_cache[worker_id];
-        *(uintptr_t *)(rdc_local_qset_ptr + 0x20) = offset38_cache[worker_id];
+        perror("open hwgc dev failed");
+        bool tag = false; // 决定是否需要分发处理该task
+        do
+        {
+          uintptr_t task;
+          if (localBot[worker_id] <= 0)
+            tag = false;
+          else
+          {
+            localBot[worker_id] = (localBot[worker_id] - 1) & (TASKQUEUE_SIZE - 1);
+            task = *(uintptr_t *)(elems + localBot[worker_id] * 8);
+            tag = true;
+          }
+          if (tag)
+            dispatch_task(task, pss, worker_id);
+        } while (tag);
+
+        *(uint *)bottom_addr = localBot[worker_id];
+        // evacuate_live_objects(pss, worker_id);
+
+        if (last_index_valid[worker_id])
+          *(size_t *)((uintptr_t)pss + 0x1b0) = last_index_cache[worker_id];
+        if (parScan_offset40_valid[worker_id])
+        {
+          uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+          *(size_t *)(rdc_local_qset_ptr + 0x30) = index_cache[worker_id];
+          *(uintptr_t *)(rdc_local_qset_ptr + 0x40) = buffer_cache[worker_id];
+        }
+        if (parScan_offset20_valid[worker_id])
+        {
+          uintptr_t rdc_local_qset_ptr = (uintptr_t)pss->getRdcQueueSetPtr();
+          *(size_t *)(rdc_local_qset_ptr + 0x18) = offset30_cache[worker_id];
+          *(uintptr_t *)(rdc_local_qset_ptr + 0x20) = offset38_cache[worker_id];
+        }
+
+        if (perf_fd >= 0)
+          ioctl(perf_fd, PERF_EVENT_IOC_DISABLE, 0);
+
+        uint64_t t1_ns = now_ns();
+
+        uint64_t cycles = 0;
+        if (perf_fd >= 0)
+        {
+          if (read(perf_fd, &cycles, sizeof(cycles)) != sizeof(cycles))
+            printf("read perf cycles failed: %s\n", strerror(errno));
+        }
+
+        tty->print_cr("thread %d, work done", worker_id);
+        printf("cost time = %lu ns, %.3f us, cycles = %lu\n", t1_ns - t0_ns, (t1_ns - t0_ns) / 1000.0, cycles);
+        if (perf_fd >= 0)
+          close(perf_fd);
+      }
+      else
+      {
+
+        if (ioctl(fd[worker_id], HWGC_IOC_START, &par) < 0)
+        {
+          perror("HWGC_IOC_START");
+          goto out;
+        }
+
+        tty->print_cr("start hwgc device");
+        while (true)
+        {
+          memset(&event, 0, sizeof(event));
+
+          if (ioctl(fd[worker_id], HWGC_IOC_WAIT_EVENT, &event) < 0)
+          {
+            perror("HWGC_IOC_WAIT_EVENT");
+            break;
+          }
+
+          switch (event.type)
+          {
+          case HWGC_EVENT_ALLOCATE:
+          {
+            uintptr_t node_allocator_ptr = event.par0;
+            event.res0 = (uintptr_t)BufferNode::allocate(*(size_t *)(node_allocator_ptr));
+
+            if (ioctl(fd[worker_id], HWGC_IOC_REPLY_EVENT, &event) < 0)
+            {
+              perror("HWGC_IOC_REPLY_EVENT");
+              goto failed;
+            }
+
+            break;
+          }
+
+          case HWGC_EVENT_WAKE:
+          {
+            uintptr_t lockPtr = event.par0;
+            ((Mutex *)(lockPtr))->unlock();
+
+            event.res0 = 0;
+            event.res1 = 0;
+            if (ioctl(fd[worker_id], HWGC_IOC_REPLY_EVENT, &event) < 0)
+            {
+              perror("HWGC_IOC_REPLY_EVENT");
+              goto failed;
+            }
+            break;
+          }
+
+          case HWGC_EVENT_EXPAND:
+          {
+            uint node_index = event.par0;
+            bool signal = _g1h->expand_single_region(node_index);
+            event.res0 = signal;
+            event.res1 = 0;
+            if (ioctl(fd[worker_id], HWGC_IOC_REPLY_EVENT, &event) < 0)
+            {
+              perror("HWGC_IOC_REPLY_EVENT");
+              goto failed;
+            }
+            break;
+          }
+
+          case HWGC_EVENT_GROW:
+          {
+            uintptr_t grow_array_ptr = event.par0;
+            uint len = event.par1;
+            ((GrowableArray<HeapRegion *> *)grow_array_ptr)->grow(len);
+            event.res0 = 0;
+            event.res1 = 0;
+            if (ioctl(fd[worker_id], HWGC_IOC_REPLY_EVENT, &event) < 0)
+            {
+              perror("HWGC_IOC_REPLY_EVENT");
+              goto failed;
+            }
+            break;
+          }
+
+          case HWGC_EVENT_DONE:
+          {
+            *(uint *)bottom_addr = 0;
+            if (perf_fd >= 0)
+              ioctl(perf_fd, PERF_EVENT_IOC_DISABLE, 0);
+
+            uint64_t t1_ns = now_ns();
+
+            uint64_t cycles = 0;
+            if (perf_fd >= 0)
+            {
+              if (read(perf_fd, &cycles, sizeof(cycles)) != sizeof(cycles))
+                printf("read perf cycles failed: %s\n", strerror(errno));
+            }
+
+            tty->print_cr("thread %d, work done", worker_id);
+            printf("cost time = %lu ns, %.3f us, cycles = %lu\n", t1_ns - t0_ns, (t1_ns - t0_ns) / 1000.0, cycles);
+            if (perf_fd >= 0)
+              close(perf_fd);
+            goto out;
+          }
+
+          case HWGC_EVENT_ERROR:
+            perror("device operation failed\n");
+            goto failed;
+
+          default:
+            perror("unkown event type\n");
+            goto failed;
+          }
+        }
+      failed:
+        close(fd[worker_id]);
+        fd[worker_id] = -1;
       }
     }
 
+  out:
     end_work(worker_id);
   }
 };
