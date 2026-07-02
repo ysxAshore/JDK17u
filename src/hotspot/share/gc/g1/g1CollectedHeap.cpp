@@ -4907,10 +4907,31 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
     uintptr_t result = 0;
 
-    while (true)
+    if (dest_attr_type == 0)
+      result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+    else if (dest_attr_type == 1)
     {
-      uintptr_t old = Atomic::cmpxchg(&par_allocate_owner, (uintptr_t)0, (uintptr_t)Thread::current());
-      if (old == 0)
+      uintptr_t lock_ptr = alloc_region + 0x40;
+      IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", lock_ptr + 8, 4, *(uint *)(lock_ptr + 8)));
+      while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
+      {
+        IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
+      }
+      result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
+      uint old_lock_value = Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)1, (uint)0);
+      if (old_lock_value > 1)
+      {
+        tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
+        ((Mutex *)(lock_ptr))->unlock();
+      }
+    }
+
+    if (result == 0)
+    {
+      uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
+      IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 1, is_full_value));
+      bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
+      if (!is_full)
       {
         if (dest_attr_type == 0)
           result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
@@ -4933,63 +4954,34 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
         if (result == 0)
         {
-          uint8_t is_full_value = *(uint8_t *)(allocator_ptr + 0x10);
-          IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", allocator_ptr + 0x10, 1, is_full_value));
-          bool is_full = dest_attr_type == 0 ? is_full_value & 0x1 : is_full_value & 0x2;
-          if (!is_full)
+          uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
+          while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
+          {
+            IFDEF(TRACE, tty->print_cr("wait par_allocate freelist lock"));
+          }
+          *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
+          IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %lx", freelist_lock_ptr, 8, (uintptr_t)Thread::current()));
+
+          result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+          if (result == 0)
           {
             if (dest_attr_type == 0)
-              result = par_allocate_iml(alloc_region, min_word_size, desired_word_size, actual_word_size, worker_id);
+              *(bool *)(allocator_ptr + 0x10) = true;
             else if (dest_attr_type == 1)
-            {
-              uintptr_t lock_ptr = alloc_region + 0x40;
-              IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to get %x", lock_ptr + 8, 4, *(uint *)(lock_ptr + 8)));
-              while (Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)0, (uint)1) != 0)
-              {
-                IFDEF(TRACE, tty->print_cr("wait par_allocate mutex"));
-              }
-              result = par_allocate(alloc_region, min_word_size, desired_word_size, actual_word_size, true, worker_id);
-              uint old_lock_value = Atomic::cmpxchg((uint *)(lock_ptr + 8), (uint)1, (uint)0);
-              if (old_lock_value > 1)
-              {
-                tty->print_cr("par_allocate alloc_region_lock_ptr unlock");
-                ((Mutex *)(lock_ptr))->unlock();
-              }
-            }
-
-            if (result == 0)
-            {
-              uintptr_t freelist_lock_ptr = (uintptr_t)FreeList_lock;
-              while (Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)0, (uint)1) != 0)
-              {
-                IFDEF(TRACE, tty->print_cr("wait par_allocate freelist lock"));
-              }
-              *(uintptr_t *)(freelist_lock_ptr) = (uintptr_t)Thread::current();
-              IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %lx", freelist_lock_ptr, 8, (uintptr_t)Thread::current()));
-
-              result = attempt_allocation_using_new_region(region_ptr, alloc_region, (uintptr_t)G1AllocRegion::_dummy_region, min_word_size, desired_word_size, actual_word_size, worker_id);
-              if (result == 0)
-              {
-                if (dest_attr_type == 0)
-                  *(bool *)(allocator_ptr + 0x10) = true;
-                else if (dest_attr_type == 1)
-                  *(bool *)(allocator_ptr + 0x11) = true;
-                uintptr_t addr = allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11);
-                IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", addr, 1, true));
-              }
-              uint old_lock_value = Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)1, (uint)0);
-              if (old_lock_value > 1)
-              {
-                FreeList_lock->unlock();
-                tty->print_cr("par_allocate freelist lock unlock");
-              }
-            }
+              *(bool *)(allocator_ptr + 0x11) = true;
+            uintptr_t addr = allocator_ptr + (dest_attr_type == 0 ? 0x10 : 0x11);
+            IFDEF(TRACE, tty->print_cr("par_allocate_during_gc: access %lx (%x bytes) to write %x", addr, 1, true));
+          }
+          uint old_lock_value = Atomic::cmpxchg((uint *)(freelist_lock_ptr + 8), (uint)1, (uint)0);
+          if (old_lock_value > 1)
+          {
+            FreeList_lock->unlock();
+            tty->print_cr("par_allocate freelist lock unlock");
           }
         }
-        *(uintptr_t *)(&par_allocate_owner) = (uintptr_t)0;
-        return result;
       }
     }
+    return result;
   }
 
   uintptr_t allocate_direct_or_new_plab(u_int16_t dest_attr, size_t word_sz, bool *plab_refill_failed, uintptr_t plab_allocator_ptr, G1ParScanThreadState *pss, uint worker_id)
@@ -5194,7 +5186,6 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
         age = (m_value >> 0x3) & 0x1111;
 
       uint threshold = *(uint *)((uintptr_t)pss + 0x17c);
-      IFDEF(TRACE, tty->print_cr("do_copy2survivor: access %lx (%d bytes) to get %x", (uintptr_t)pss + 0x17c, 4, threshold));
       if (age < threshold)
       {
         dest_attr = src_region_attr;
@@ -5760,6 +5751,19 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
   }
 
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sched.h>
+
+  static void print_gc_thread_info(const char *tag)
+  {
+    pid_t pid = getpid();
+    pid_t tid = syscall(SYS_gettid);
+    int cpu = sched_getcpu();
+
+    tty->print_cr("[GCDBG] %s pid=%d tid=%d cpu=%d heap=%p", tag, pid, tid, cpu, G1CollectedHeap::heap());
+  }
+
   void work(uint worker_id)
   {
     start_work(worker_id);
@@ -5775,8 +5779,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
       uintptr_t bottom_addr = pss->getTaskQueueBottomAddr();
       uintptr_t age_top_addr = pss->getTaskQueueAgeTopAddr();
       localBot[worker_id] = *(uint *)(bottom_addr);
+      print_gc_thread_info("work");
       tty->print_cr("thread %d, localBot is %d pss %lx", worker_id, localBot[worker_id], (uintptr_t)pss);
-      uint oop_size_offset = java_lang_Class::get_oop_size_offset();                   // 0x20 0x24
+      uint oop_size_offset = java_lang_Class::get_oop_size_offset();                   // 0x20 0x24 0x70
       uint static_count_offset = java_lang_Class::get_static_oop_field_count_offset(); // 0x24 0x28 0xb8
       IFDEF(TRACE, tty->print_cr("oop_size_offset %x, static coutn offset %x", oop_size_offset, static_count_offset));
       IFDEF(TRACE, tty->print_cr("ref offset %x %x %x", java_lang_ref_Reference::discovered_offset(), java_lang_ref_Reference::referent_offset(), InstanceMirrorKlass::offset_of_static_fields()));

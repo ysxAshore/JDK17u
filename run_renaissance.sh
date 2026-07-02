@@ -27,7 +27,6 @@ BENCHMARKS=(
   neo4j-analytics
   finagle-http
   dec-tree
-  scala-stm-bench7
   naive-bayes
   als
   par-mnemonics
@@ -38,7 +37,10 @@ BENCHMARKS=(
   mnemonics
   dotty
   finagle-chirper
+  reactors
+  scala-stm-bench7
 )
+# akka-uct not run
 
 for bench in "${BENCHMARKS[@]}"; do
   echo "============================================================"
