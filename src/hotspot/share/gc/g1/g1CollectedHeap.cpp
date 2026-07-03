@@ -5701,6 +5701,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
   void dispatch_task(uintptr_t task, G1ParScanThreadState *pss, uint worker_id)
   {
+	IFDEF(TRACE, tty->print_cr("worker_id %u, dispatch task %lx", worker_id, task));
     if ((task & 0x3) != 0x2)
       do_oop_evac(task - (task & 0x3), pss, worker_id);
     else

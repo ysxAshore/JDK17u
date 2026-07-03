@@ -16,3 +16,5 @@ or either of these files:
 
 See <https://openjdk.java.net/> for more information about
 the OpenJDK Community and the JDK.
+
+./build/linux-x86_64-server-release/jdk/bin/java -Xlog:gc+task -XX:+UseG1GC -XX:-UseCompressedOops -XX:-UseCompressedClassPointers -XX:ParallelGCThreads=2 -XX:ConcGCThreads=2 -jar ../../test/benchmark/dacapo/dacapo-23.11-MR2-chopin.jar avrora
