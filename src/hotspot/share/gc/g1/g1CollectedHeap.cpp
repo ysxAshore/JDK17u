@@ -4994,7 +4994,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
     if (dest_attr_type == 0)
       plab_stats_ptr = (uintptr_t)_g1h + 0x250;
     else if (dest_attr_type == 1)
-      plab_stats_ptr = (uintptr_t)_g1h + 0x2d0;
+      plab_stats_ptr = (uintptr_t)_g1h + 0x2e0;
 
     uint no_of_gc_workers = _num_workers;
 
@@ -5701,7 +5701,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T volatile* dest,
 
   void dispatch_task(uintptr_t task, G1ParScanThreadState *pss, uint worker_id)
   {
-	IFDEF(TRACE, tty->print_cr("worker_id %u, dispatch task %lx", worker_id, task));
+    IFDEF(TRACE, tty->print_cr("worker_id %u, dispatch task %lx", worker_id, task));
     if ((task & 0x3) != 0x2)
       do_oop_evac(task - (task & 0x3), pss, worker_id);
     else
